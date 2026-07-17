@@ -1162,7 +1162,8 @@ def render_production_centre(db):
         st.markdown(f"### 📋 Queued ({len(queued)})")
         for b in queued:
             ings = db.get_batch_materials(b['id']); tw = sum(m['quantity_used'] for m in ings)
-            border_color = COLORS['success'] if not b.get("has_shortages") else COLORS['warning'] status_text = "✅ Ready" if not b.get("has_shortages") else "⚠️ Shortages" st.markdown(f'<div class="queue-card" style="border-top:3px solid {border_color}"><h4>{status_text} - {b["product_name"]}</h4><p>Batch: {b["batch_number"]} | Size: {b["batch_size"]}g | Ingredients: {len(ings)} | Weight: {tw:.1f}g</p></div>', unsafe_allow_html=True)
+            border_color = COLORS['success'] if not b.get("has_shortages") else COLORS['warning'] 
+            status_text = "✅ Ready" if not b.get("has_shortages") else "⚠️ Shortages" st.markdown(f'<div class="queue-card" style="border-top:3px solid {border_color}"><h4>{status_text} - {b["product_name"]}</h4><p>Batch: {b["batch_number"]} | Size: {b["batch_size"]}g | Ingredients: {len(ings)} | Weight: {tw:.1f}g</p></div>', unsafe_allow_html=True)
     
     if active:
         st.markdown(f"### 🔄 Active ({len(active)})")
