@@ -1172,7 +1172,8 @@ def render_production_centre(db):
             if b['start_time']:
                 try: st_time = datetime.strptime(b['start_time'], "%Y-%m-%d %H:%M:%S"); el = datetime.now() - st_time; h, r = divmod(int(el.total_seconds()), 3600); m, s = divmod(r, 60); timer_text = f"{h:02d}:{m:02d}:{s:02d}"
                 except: pass
-            border_color = COLORS['success'] st.markdown(f'<div class="queue-card" style="border-top:3px solid {border_color};"><h4>🔧 {b["product_name"]} <span style="float:right;">⏱️ {timer_text}</span></h4></div>', unsafe_allow_html=True)
+            border_color = COLORS['success'] 
+            st.markdown(f'<div class="queue-card" style="border-top:3px solid {border_color};"><h4>🔧 {b["product_name"]} <span style="float:right;">⏱️ {timer_text}</span></h4></div>', unsafe_allow_html=True)
     
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
     st.markdown("## 🏭 Production Line")
