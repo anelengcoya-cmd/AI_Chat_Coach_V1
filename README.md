@@ -46,22 +46,13 @@ Inventilytics  helps small-batch cosmetics manufacturers manage their entire pro
 - Python 3.8+
 - pip
 
-### Setup
-
-```bash
-# Clone the repository
-git clone https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
-cd YOUR_REPO_NAME
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the app
+## Run the app
 streamlit run inventilytics.py
 Usage
-Open the app in your browser (default: http://localhost:8501)
+### Open the app in your browser 
+default:https://inventilytics.streamlit.app/
 
-Select your role from the sidebar:
+### Select your role from the sidebar:
 
 💼 Business Owner - Full access to all features
 
@@ -69,13 +60,13 @@ Select your role from the sidebar:
 
 👷 Factory Worker - Start and complete production batches
 
-Upload your data files (Excel/CSV/ZIP) via the sidebar
+### Upload your data files (Excel/CSV/ZIP) via the sidebar
 
-Map columns to database fields
+### Map columns to database fields
 
-Start managing production!
+### Start managing production!
 
-Role Permissions
+## Role Permissions
 Feature	Business Owner	Production Manager	Factory Worker
 Import Data	✅	✅	❌
 Edit Formulas	✅	✅	❌
@@ -85,38 +76,39 @@ Start Batches	✅	✅	✅
 Complete Batches	✅	❌	✅
 View Financials	✅	✅	❌
 Download Reports	✅	❌	❌
-Data Upload Formats
-Formulas
+
+## Data Upload Formats
+### Formulas
 Required columns: Ingredient Name, Percentage (%)
 
-Materials
+### Materials
 Required columns: Material Name, Stock Quantity
 
-Packaging
+### Packaging
 Required columns: Product Name, Container Price, Cap/Lid Price, Labeling Costs
 
-Cost Analysis
+### Cost Analysis
 Required columns: Product Name, Selling Price/Unit, Labour Cost/Hour
 
-Suppliers
+### Suppliers
 Required columns: Ingredient Name, Supplier Name, Price, Size, Price/Unit
 
-Data Matching
+### Data Matching
 Any columns not mapped during import are preserved. Use the Data Matching Hub in the Insights tab to map them to 80+ business metrics across 7 categories:
 
-Product Information
+### Product Information
 
-Pricing & Sales
+### Pricing & Sales
 
-Production Costs
+### Production Costs
 
-Batch Production
+### Batch Production
 
-Inventory & Supply Chain
+### Inventory & Supply Chain
 
-Supplier Information
+### Supplier Information
 
-Financial Metrics
+### Financial Metrics
 
 License
 MIT License - see LICENSE file for details.
@@ -125,5 +117,4 @@ Support
 For issues or feature requests, please open an issue on GitHub.
 
 
----
 
