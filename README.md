@@ -1,10 +1,10 @@
-# EQPIS - Earthly Q Production Intelligence System
+# Inventilytics - Earthly Q Production Intelligence System
 
 A production management application for handmade natural hair and skin care businesses. Built with Streamlit.
 
 ## Overview
 
-EQPIS helps small-batch cosmetics manufacturers manage their entire production workflow:
+Inventilytics  helps small-batch cosmetics manufacturers manage their entire production workflow:
 
 - **Formulas** - Store and edit product recipes with ingredient percentages
 - **Inventory** - Track raw material stock levels and reorder points
