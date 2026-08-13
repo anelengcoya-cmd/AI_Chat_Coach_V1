@@ -1,1284 +1,1037 @@
-%%writefile inventilytics.py
-"""
-Inventilytics - Earthly Q Production Intelligence System
-Version 15.0 - Comprehensive Data Matching & Business Intelligence
-"""
-
+%%writefile chat_coach_app.py
 import streamlit as st
 import pandas as pd
-import sqlite3
-import os
-import random
-import string
-import time
-import zipfile
+import numpy as np
+import json
+import re
 from datetime import datetime, timedelta
-from io import BytesIO
 import plotly.express as px
 import plotly.graph_objects as go
-import bcrypt
+from plotly.subplots import make_subplots
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.sentiment import SentimentIntensityAnalyzer
+from collections import Counter, defaultdict
+import gc
+import hashlib
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.cluster import KMeans
+import warnings
+warnings.filterwarnings('ignore')
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
-DB_PATH = "eqpis_database.sqlite"
-BATCH_PREFIX = "EQ"
-DEFAULT_BATCH_SIZE = 1000
-
-COLORS = {
-    'primary': '#C2185B', 'primary_light': '#F8BBD0', 'primary_pale': '#FCE4EC',
-    'accent': '#E91E63', 'bg_beige': '#F5F0E6', 'white': '#FFFFFF',
-    'success': '#4CAF50', 'warning': '#FF9800', 'error': '#F44336',
-}
-
-# All business data fields that can be matched
-BUSINESS_DATA_FIELDS = {
-    'Product Information': {
-        'product_name': 'Product Name',
-        'product_category': 'Product Category',
-        'product_description': 'Product Description',
-        'sku_code': 'SKU Code',
-        'barcode': 'Barcode',
-    },
-    'Pricing & Sales': {
-        'selling_price_unit': 'Selling Price per Unit (R)',
-        'wholesale_price': 'Wholesale Price (R)',
-        'retail_price': 'Retail Price (R)',
-        'bulk_price': 'Bulk/Volume Price (R)',
-        'discount_rate': 'Discount Rate (%)',
-        'min_order_quantity': 'Minimum Order Quantity',
-    },
-    'Production Costs': {
-        'raw_material_cost_batch': 'Raw Material Cost per Batch (R)',
-        'packaging_cost_unit': 'Packaging Cost per Unit (R)',
-        'labour_cost_hour': 'Labour Cost per Hour (R)',
-        'labour_cost_batch': 'Labour Cost per Batch (R)',
-        'overhead_cost_batch': 'Overhead Cost per Batch (R)',
-        'equipment_cost_batch': 'Equipment Cost per Batch (R)',
-        'utility_cost_batch': 'Utility Cost per Batch (R)',
-        'total_production_cost': 'Total Production Cost (R)',
-    },
-    'Batch Production': {
-        'units_produced': 'Units Produced per Batch',
-        'batch_size_grams': 'Batch Size (grams)',
-        'batch_size_liters': 'Batch Size (liters)',
-        'production_time_hours': 'Production Time (Hours)',
-        'time_per_unit_minutes': 'Time per Unit (Minutes)',
-        'yield_percentage': 'Production Yield (%)',
-        'wastage_percentage': 'Wastage (%)',
-        'quality_pass_rate': 'Quality Pass Rate (%)',
-    },
-    'Inventory & Supply Chain': {
-        'material_name': 'Material/Ingredient Name',
-        'stock_quantity': 'Current Stock Quantity',
-        'reorder_level': 'Reorder Level',
-        'reorder_quantity': 'Reorder Quantity',
-        'lead_time_days': 'Supplier Lead Time (Days)',
-        'safety_stock': 'Safety Stock Level',
-        'storage_location': 'Storage Location',
-        'expiry_date': 'Expiry Date',
-    },
-    'Supplier Information': {
-        'supplier_name': 'Supplier Name',
-        'supplier_contact': 'Supplier Contact Person',
-        'supplier_email': 'Supplier Email',
-        'supplier_phone': 'Supplier Phone',
-        'supplier_price': 'Supplier Price (R)',
-        'supplier_size': 'Supplier Package Size',
-        'supplier_price_per_unit': 'Supplier Price per Unit (R)',
-        'supplier_link': 'Supplier Link/URL',
-        'supplier_rating': 'Supplier Rating (1-5)',
-        'supplier_payment_terms': 'Payment Terms',
-    },
-    'Financial Metrics': {
-        'revenue_per_batch': 'Revenue per Batch (R)',
-        'revenue_per_unit': 'Revenue per Unit (R)',
-        'gross_profit_batch': 'Gross Profit per Batch (R)',
-        'gross_profit_unit': 'Gross Profit per Unit (R)',
-        'gross_margin_percent': 'Gross Margin (%)',
-        'net_profit_batch': 'Net Profit per Batch (R)',
-        'marketing_cost_unit': 'Marketing Cost per Unit (R)',
-        'shipping_cost_unit': 'Shipping Cost per Unit (R)',
-        'total_cost_per_unit': 'Total Cost per Unit (R)',
-        'break_even_units': 'Break-Even Units',
-        'return_on_investment': 'ROI (%)',
-    },
-    'Sales & Customer': {
-        'units_sold_month': 'Units Sold per Month',
-        'units_sold_week': 'Units Sold per Week',
-        'customer_acquisition_cost': 'Customer Acquisition Cost (R)',
-        'customer_lifetime_value': 'Customer Lifetime Value (R)',
-        'repeat_purchase_rate': 'Repeat Purchase Rate (%)',
-        'return_rate': 'Return/Refund Rate (%)',
-        'marketplace_fees': 'Marketplace/Platform Fees (R)',
-    },
-}
-
-def apply_css():
-    st.markdown(f"""
-    <style>
-        .stApp {{ background-color: {COLORS['bg_beige']}; }}
-        [data-testid="stSidebar"] {{ background-color: {COLORS['white']}; }}
-        h1, h2, h3 {{ color: {COLORS['primary']} !important; }}
-        .stButton > button {{ background-color: {COLORS['primary']}; color: white; border: none; border-radius: 8px; padding: 10px 24px; font-weight: 600; }}
-        .capacity-card {{ background: white; border-radius: 10px; padding: 15px; margin: 8px 0; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }}
-        .can-produce {{ border-left: 4px solid {COLORS['success']}; }}
-        .cannot-produce {{ border-left: 4px solid {COLORS['error']}; }}
-        .queue-card {{ background: white; border-radius: 10px; padding: 20px; margin: 10px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
-        .user-info-card {{ background: {COLORS['primary_pale']}; padding: 15px; border-radius: 10px; margin-bottom: 20px; }}
-        .role-badge {{ display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.8em; color: white; }}
-        .role-owner {{ background-color: {COLORS['primary']}; }}
-        .role-manager {{ background-color: {COLORS['accent']}; }}
-        .role-worker {{ background-color: #F48FB1; }}
-        [data-testid="stMetric"] {{ background: white; border-radius: 8px; padding: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
-        .completion-report {{ background: white; border: 2px solid {COLORS['success']}; border-radius: 12px; padding: 25px; margin: 20px 0; }}
-        .data-match-card {{ background: white; border: 2px solid {COLORS['primary_light']}; border-radius: 10px; padding: 20px; margin: 15px 0; }}
-        .matched-field {{ background: #E8F5E9; border-left: 4px solid {COLORS['success']}; padding: 10px; margin: 5px 0; border-radius: 5px; }}
-        .unmatched-field {{ background: #FFF3E0; border-left: 4px solid {COLORS['warning']}; padding: 10px; margin: 5px 0; border-radius: 5px; }}
-        .stTabs [data-baseweb="tab-list"] {{ gap: 8px; padding: 10px; border-radius: 10px; }}
-        .stTabs [data-baseweb="tab"] {{ background: white; border-radius: 8px; padding: 12px 24px; font-size: 0.95em; white-space: nowrap; }}
-        .stTabs [aria-selected="true"] {{ background: {COLORS['primary']} !important; color: white !important; }}
-        .section-divider {{ border-top: 2px solid {COLORS['primary_light']}; margin: 25px 0; }}
-        .production-line {{ background: white; border-radius: 12px; padding: 25px; margin: 15px 0; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
-    </style>
-    """, unsafe_allow_html=True)
-
-# ============================================================================
-# DATABASE MANAGER
-# ============================================================================
-
-class DatabaseManager:
-    def __init__(self, db_path=DB_PATH):
-        self.db_path = db_path
-        self.init_db()
-    
-    def connect(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-    
-    def dict_from_row(self, row):
-        if row is None: return None
-        return {key: row[key] for key in row.keys()}
-    
-    @staticmethod
-    def safe_float(val, default=0):
-        if val is None: return default
-        if isinstance(val, (int, float)): return float(val)
-        if isinstance(val, str):
-            val = val.strip().replace('%', '').replace(',', '').replace('R', '')
-            try: return float(val)
-            except: return default
-        try: return float(val)
-        except: return default
-    
-    def init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        c.executescript('''
-            CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, is_current INTEGER DEFAULT 1);
-            CREATE TABLE IF NOT EXISTS formula_ingredients (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER NOT NULL, ingredient_name TEXT NOT NULL, percentage REAL NOT NULL, unit TEXT DEFAULT 'g');
-            CREATE TABLE IF NOT EXISTS raw_materials (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, supplier TEXT DEFAULT '', cost_per_unit REAL DEFAULT 0, unit TEXT DEFAULT 'g', stock_quantity REAL DEFAULT 0, reorder_quantity REAL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS suppliers (id INTEGER PRIMARY KEY AUTOINCREMENT, ingredient_name TEXT NOT NULL, supplier1_name TEXT DEFAULT '', supplier1_price REAL DEFAULT 0, supplier1_size TEXT DEFAULT '', supplier1_price_per_unit REAL DEFAULT 0, link1 TEXT DEFAULT '');
-            CREATE TABLE IF NOT EXISTS packaging_costs (id INTEGER PRIMARY KEY AUTOINCREMENT, product_name TEXT NOT NULL, total_packaging_cost REAL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS product_cost_analysis (id INTEGER PRIMARY KEY AUTOINCREMENT, product_name TEXT NOT NULL, raw_material_cost_batch REAL DEFAULT 0, units_produced INTEGER DEFAULT 0, selling_price_unit REAL DEFAULT 0, labour_cost_hour REAL DEFAULT 0, production_time_hours REAL DEFAULT 0, time_per_unit_minutes REAL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS production_batches (id INTEGER PRIMARY KEY AUTOINCREMENT, batch_number TEXT NOT NULL UNIQUE, product_id INTEGER NOT NULL, batch_size REAL NOT NULL, production_date TEXT, start_time TEXT, end_time TEXT, time_spent REAL DEFAULT 0, units_produced INTEGER DEFAULT 0, notes TEXT DEFAULT '', status TEXT DEFAULT 'queued', completed_by TEXT DEFAULT '', total_material_cost REAL DEFAULT 0, total_packaging_cost REAL DEFAULT 0, total_batch_cost REAL DEFAULT 0, has_shortages INTEGER DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS batch_materials_used (id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL, ingredient_name TEXT NOT NULL, quantity_used REAL NOT NULL, unit TEXT DEFAULT 'g', batch_number TEXT DEFAULT '', expiry_date TEXT DEFAULT '');
-            CREATE TABLE IF NOT EXISTS batch_files (id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL, filename TEXT, file_data BLOB, file_type TEXT, uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS batch_completion_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL, batch_number TEXT, product_name TEXT, completed_by TEXT, time_spent REAL, units_produced INTEGER, low_stock_alerts TEXT, completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS unmapped_data (id INTEGER PRIMARY KEY AUTOINCREMENT, sheet_name TEXT, column_name TEXT, sample_data TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS data_mappings (id INTEGER PRIMARY KEY AUTOINCREMENT, sheet_name TEXT, source_column TEXT, target_field TEXT, target_category TEXT, target_product TEXT DEFAULT '', manual_value TEXT DEFAULT '', mapped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS business_data (id INTEGER PRIMARY KEY AUTOINCREMENT, product_name TEXT, field_name TEXT, field_value TEXT, field_category TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS production_instructions (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER NOT NULL UNIQUE, instructions TEXT DEFAULT '', safety_notes TEXT DEFAULT '');
-            CREATE TABLE IF NOT EXISTS restock_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, ingredient_name TEXT NOT NULL, quantity_needed REAL, estimated_cost REAL, status TEXT DEFAULT 'pending', requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS ops_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, note_text TEXT, note_type TEXT DEFAULT 'general', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-        ''')
-        conn.commit()
-        conn.close()
-    
-    def has_data(self):
-        conn = self.connect()
-        return conn.execute("SELECT COUNT(*) FROM products WHERE is_current=1").fetchone()[0] > 0
-    
-    def get_stats(self):
-        conn = self.connect()
-        return {
-            'products': conn.execute("SELECT COUNT(*) FROM products WHERE is_current=1").fetchone()[0],
-            'formula_ingredients': conn.execute("SELECT COUNT(*) FROM formula_ingredients").fetchone()[0],
-            'raw_materials': conn.execute("SELECT COUNT(*) FROM raw_materials").fetchone()[0],
-            'suppliers': conn.execute("SELECT COUNT(*) FROM suppliers").fetchone()[0],
-            'packaging': conn.execute("SELECT COUNT(*) FROM packaging_costs").fetchone()[0],
-            'cost_analysis': conn.execute("SELECT COUNT(*) FROM product_cost_analysis").fetchone()[0],
-        }
-    
-    def get_uploaded_sheets(self):
-        """Get list of all uploaded sheets for data matching"""
-        conn = self.connect()
-        sheets = set()
-        for r in conn.execute("SELECT DISTINCT sheet_name FROM unmapped_data").fetchall():
-            sheets.add(r['sheet_name'])
-        # Also get sheets from mapped data
-        for r in conn.execute("SELECT DISTINCT sheet_name FROM data_mappings").fetchall():
-            sheets.add(r['sheet_name'])
-        conn.close()
-        return sorted(list(sheets))
-    
-    def get_sheet_columns(self, sheet_name):
-        """Get all columns from a specific sheet"""
-        conn = self.connect()
-        columns = []
-        for r in conn.execute("SELECT column_name, sample_data FROM unmapped_data WHERE sheet_name=?", (sheet_name,)).fetchall():
-            columns.append({'column': r['column_name'], 'sample': r['sample_data']})
-        conn.close()
-        return columns
-    
-    def save_data_mapping(self, sheet_name, source_column, target_field, target_category, target_product=""):
-        conn = self.connect()
-        existing = conn.execute("SELECT id FROM data_mappings WHERE sheet_name=? AND source_column=? AND target_field=?", (sheet_name, source_column, target_field)).fetchone()
-        if existing:
-            conn.execute("UPDATE data_mappings SET target_category=?, target_product=?, mapped_at=? WHERE id=?", (target_category, target_product, datetime.now(), existing[0]))
-        else:
-            conn.execute("INSERT INTO data_mappings (sheet_name, source_column, target_field, target_category, target_product) VALUES (?,?,?,?,?)", (sheet_name, source_column, target_field, target_category, target_product))
-        conn.commit(); conn.close()
-    
-    def get_data_mappings(self):
-        conn = self.connect()
-        return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM data_mappings ORDER BY target_category, target_field").fetchall()]
-    
-    def save_business_data(self, product_name, field_name, field_value, field_category):
-        conn = self.connect()
-        existing = conn.execute("SELECT id FROM business_data WHERE product_name=? AND field_name=?", (product_name, field_name)).fetchone()
-        if existing:
-            conn.execute("UPDATE business_data SET field_value=?, field_category=?, updated_at=? WHERE id=?", (str(field_value), field_category, datetime.now(), existing[0]))
-        else:
-            conn.execute("INSERT INTO business_data (product_name, field_name, field_value, field_category) VALUES (?,?,?,?)", (product_name, field_name, str(field_value), field_category))
-        conn.commit(); conn.close()
-    
-    def get_business_data(self, product_name=None):
-        conn = self.connect()
-        if product_name:
-            return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM business_data WHERE product_name=? ORDER BY field_category, field_name", (product_name,)).fetchall()]
-        return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM business_data ORDER BY product_name, field_category, field_name").fetchall()]
-    
-    def apply_mappings_to_data(self, sheet_name):
-        """Apply saved mappings to populate business_data from unmapped_data"""
-        conn = self.connect()
-        mappings = [self.dict_from_row(r) for r in conn.execute("SELECT * FROM data_mappings WHERE sheet_name=?", (sheet_name,)).fetchall()]
-        
-        count = 0
-        for mp in mappings:
-            # Get the data from unmapped_data
-            data = conn.execute("SELECT sample_data FROM unmapped_data WHERE sheet_name=? AND column_name=?", (sheet_name, mp['source_column'])).fetchone()
-            if data:
-                values = data['sample_data'].split('|')
-                # For now, associate with target_product or first product
-                product = mp['target_product'] if mp['target_product'] else 'General'
-                for val in values:
-                    if val and val != 'nan':
-                        existing = conn.execute("SELECT id FROM business_data WHERE product_name=? AND field_name=?", (product, mp['target_field'])).fetchone()
-                        if existing:
-                            conn.execute("UPDATE business_data SET field_value=?, field_category=?, updated_at=? WHERE id=?", (val, mp['target_category'], datetime.now(), existing[0]))
-                        else:
-                            conn.execute("INSERT INTO business_data (product_name, field_name, field_value, field_category) VALUES (?,?,?,?)", (product, mp['target_field'], val, mp['target_category']))
-                        count += 1
-        conn.commit(); conn.close()
-        return count
-    
-    # ============ STANDARD METHODS (kept for compatibility) ============
-    def add_product(self, name):
-        conn = self.connect()
-        r = conn.execute("SELECT id FROM products WHERE name=?", (name,)).fetchone()
-        if r: return r[0]
-        conn.execute("INSERT INTO products (name) VALUES (?)", (name,)); conn.commit()
-        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    
-    def rename_product(self, old_name, new_name):
-        conn = self.connect()
-        conn.execute("UPDATE products SET name=? WHERE name=?", (new_name, old_name))
-        conn.execute("UPDATE packaging_costs SET product_name=? WHERE product_name=?", (new_name, old_name))
-        conn.execute("UPDATE product_cost_analysis SET product_name=? WHERE product_name=?", (new_name, old_name))
-        conn.execute("UPDATE business_data SET product_name=? WHERE product_name=?", (new_name, old_name))
-        conn.commit(); conn.close()
-    
-    def get_all_products(self):
-        conn = self.connect()
-        return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM products WHERE is_current=1").fetchall()]
-    
-    def has_formula(self, product_name):
-        conn = self.connect()
-        return conn.execute("SELECT COUNT(*) FROM formula_ingredients fi JOIN products p ON fi.product_id=p.id WHERE p.name=?", (product_name,)).fetchone()[0] > 0
-    
-    def save_formula(self, product_name, ingredients_df):
-        conn = self.connect()
-        pid = self.add_product(product_name)
-        conn.execute("DELETE FROM formula_ingredients WHERE product_id=?", (pid,))
-        count = 0
-        for _, row in ingredients_df.iterrows():
-            ing = None
-            for col in ['Ingredient', 'ingredient_name', 'Ingredient Name']:
-                if col in row.index:
-                    val = row[col]
-                    if not pd.isna(val) and str(val).strip() and str(val) != 'nan': ing = str(val).strip(); break
-            pct = 0
-            for col in ['%', 'percentage', 'Percentage']:
-                if col in row.index:
-                    try: pct = float(row[col])
-                    except: pct = 0; break
-            if ing and pct > 0:
-                conn.execute("INSERT INTO formula_ingredients (product_id, ingredient_name, percentage) VALUES (?,?,?)", (pid, ing, pct)); count += 1
-        conn.commit(); conn.close(); return count
-    
-    def get_formula(self, product_id):
-        conn = self.connect()
-        return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM formula_ingredients WHERE product_id=?", (product_id,)).fetchall()]
-    
-    def delete_formula(self, product_id):
-        conn = self.connect()
-        conn.execute("DELETE FROM formula_ingredients WHERE product_id=?", (product_id,))
-        conn.execute("UPDATE products SET is_current=0 WHERE id=?", (product_id,)); conn.commit(); conn.close()
-    
-    def add_material(self, name, unit='g', stock=0):
-        conn = self.connect()
-        if conn.execute("SELECT id FROM raw_materials WHERE LOWER(name)=LOWER(?)", (name,)).fetchone(): conn.close(); return False
-        conn.execute("INSERT INTO raw_materials (name, unit, stock_quantity) VALUES (?,?,?)", (name, unit, float(stock))); conn.commit(); conn.close(); return True
-    
-    def save_materials(self, df):
-        conn = self.connect()
-        for _, row in df.iterrows():
-            name = str(row.get('name', row.get('Name', '')))
-            if not name or name == 'nan': continue
-            stock = self.safe_float(row.get('stock_quantity', row.get('Stock', 0)))
-            existing = conn.execute("SELECT id FROM raw_materials WHERE LOWER(name)=LOWER(?)", (name,)).fetchone()
-            if existing: conn.execute("UPDATE raw_materials SET stock_quantity=? WHERE id=?", (stock, existing[0]))
-            else: conn.execute("INSERT INTO raw_materials (name, stock_quantity) VALUES (?,?)", (name, stock))
-        conn.commit(); conn.close()
-    
-    def get_all_materials(self):
-        conn = self.connect()
-        return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM raw_materials").fetchall()]
-    
-    def update_material(self, mat_id, name=None, stock=None, unit=None):
-        conn = self.connect()
-        if name is not None: conn.execute("UPDATE raw_materials SET name=? WHERE id=?", (str(name), mat_id))
-        if stock is not None: conn.execute("UPDATE raw_materials SET stock_quantity=? WHERE id=?", (float(stock), mat_id))
-        if unit is not None: conn.execute("UPDATE raw_materials SET unit=? WHERE id=?", (str(unit), mat_id))
-        conn.commit(); conn.close()
-    
-    def remove_material(self, mat_id):
-        conn = self.connect(); conn.execute("DELETE FROM raw_materials WHERE id=?", (mat_id,)); conn.commit(); conn.close()
-    
-    def calculate_reorder(self):
-        conn = self.connect()
-        mats = conn.execute("SELECT id FROM raw_materials").fetchall()
-        prods = conn.execute("SELECT id FROM products WHERE is_current=1").fetchall()
-        for mat in mats:
-            total = 0
-            mat_name = conn.execute("SELECT name FROM raw_materials WHERE id=?", (mat['id'],)).fetchone()
-            if mat_name:
-                for p in prods:
-                    for ing in conn.execute("SELECT ingredient_name, percentage FROM formula_ingredients WHERE product_id=?", (p['id'],)).fetchall():
-                        if ing['ingredient_name'].lower() == mat_name['name'].lower(): total += (ing['percentage']/100)*DEFAULT_BATCH_SIZE
-            conn.execute("UPDATE raw_materials SET reorder_quantity=? WHERE id=?", (total, mat['id']))
-        conn.commit(); conn.close()
-    
-    def save_packaging(self, df):
-        conn = self.connect()
-        for _, row in df.iterrows():
-            pn = str(row.get('product_name', ''))
-            if not pn or pn == 'nan': continue
-            cost = self.safe_float(row.get('total_packaging_cost', 0))
-            ex = conn.execute("SELECT id FROM packaging_costs WHERE product_name=?", (pn,)).fetchone()
-            if ex: conn.execute("UPDATE packaging_costs SET total_packaging_cost=? WHERE id=?", (cost, ex[0]))
-            else: conn.execute("INSERT INTO packaging_costs (product_name, total_packaging_cost) VALUES (?,?)", (pn, cost))
-        conn.commit(); conn.close()
-    
-    def get_packaging_cost(self, product_name):
-        conn = self.connect()
-        r = conn.execute("SELECT total_packaging_cost FROM packaging_costs WHERE product_name=?", (product_name,)).fetchone()
-        conn.close(); return r[0] if r else 0
-    
-    def save_cost_analysis(self, df):
-        conn = self.connect()
-        for _, row in df.iterrows():
-            pn = str(row.get('product_name', ''))
-            if not pn or pn == 'nan': continue
-            fields = {'raw_material_cost_batch': self.safe_float(row.get('raw_material_cost_batch', 0)), 'units_produced': int(self.safe_float(row.get('units_produced', 0))), 'selling_price_unit': self.safe_float(row.get('selling_price_unit', 0)), 'labour_cost_hour': self.safe_float(row.get('labour_cost_hour', 0))}
-            ex = conn.execute("SELECT id FROM product_cost_analysis WHERE product_name=?", (pn,)).fetchone()
-            if ex: conn.execute("UPDATE product_cost_analysis SET "+", ".join([f"{k}=?" for k in fields])+" WHERE id=?", list(fields.values())+[ex[0]])
-            else: conn.execute(f"INSERT INTO product_cost_analysis (product_name, {', '.join(fields.keys())}) VALUES (?, {', '.join(['?']*len(fields))})", [pn]+list(fields.values()))
-        conn.commit(); conn.close()
-    
-    def get_cost_analysis(self, product_name):
-        conn = self.connect()
-        r = conn.execute("SELECT * FROM product_cost_analysis WHERE product_name=?", (product_name,)).fetchone()
-        conn.close(); return self.dict_from_row(r) if r else {}
-    
-    def save_suppliers(self, df):
-        conn = self.connect()
-        for _, row in df.iterrows():
-            ing = str(row.get('ingredient_name', row.get('Ingredient', '')))
-            if not ing or ing == 'nan': continue
-            existing = conn.execute("SELECT id FROM suppliers WHERE ingredient_name=?", (ing,)).fetchone()
-            data = {'ingredient_name': ing, 'supplier1_name': str(row.get('supplier1_name', '')), 'supplier1_price': self.safe_float(row.get('supplier1_price', 0)), 'supplier1_size': str(row.get('supplier1_size', '')), 'supplier1_price_per_unit': self.safe_float(row.get('supplier1_price_per_unit', 0)), 'link1': str(row.get('link1', ''))}
-            if existing: conn.execute("UPDATE suppliers SET "+", ".join([f"{k}=?" for k in data])+" WHERE id=?", list(data.values())+[existing[0]])
-            else: conn.execute(f"INSERT INTO suppliers ({', '.join(data.keys())}) VALUES ({', '.join(['?']*len(data))})", list(data.values()))
-        conn.commit(); conn.close()
-    
-    def get_all_suppliers(self):
-        conn = self.connect()
-        return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM suppliers").fetchall()]
-    
-    def create_batch(self, product_id, batch_size, mat_cost=0, pkg_cost=0, total_cost=0):
-        conn = self.connect()
-        prod = conn.execute("SELECT name FROM products WHERE id=?", (product_id,)).fetchone()
-        if not prod: conn.close(); return None
-        acr = ''.join([w[0].upper() for w in prod['name'].split() if w])[:4] or prod['name'][:4].upper()
-        bn = f"{BATCH_PREFIX}-{acr}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{''.join(random.choices(string.ascii_uppercase+string.digits,k=4))}"
-        conn.execute("INSERT INTO production_batches (batch_number, product_id, batch_size, production_date, status, total_material_cost, total_packaging_cost, total_batch_cost) VALUES (?,?,?,?,?,?,?,?)", (bn, product_id, float(batch_size), datetime.now().strftime("%Y-%m-%d"), 'queued', float(mat_cost), float(pkg_cost), float(total_cost)))
-        bid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        for ing in conn.execute("SELECT * FROM formula_ingredients WHERE product_id=?", (product_id,)).fetchall():
-            qty = (ing['percentage']/100)*float(batch_size)
-            conn.execute("INSERT INTO batch_materials_used (batch_id, ingredient_name, quantity_used, unit, batch_number) VALUES (?,?,?,?,?)", (bid, ing['ingredient_name'], qty, ing['unit'], bn))
-        conn.commit(); conn.close(); return bn
-    
-    def get_batches(self, status=None):
-        conn = self.connect()
-        q = "SELECT pb.*, p.name as product_name FROM production_batches pb JOIN products p ON pb.product_id=p.id"
-        if status: return [self.dict_from_row(r) for r in conn.execute(q+" WHERE pb.status=? ORDER BY pb.id DESC", (status,)).fetchall()]
-        return [self.dict_from_row(r) for r in conn.execute(q+" ORDER BY pb.id DESC").fetchall()]
-    
-    def get_batch_materials(self, batch_id):
-        conn = self.connect()
-        return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM batch_materials_used WHERE batch_id=?", (batch_id,)).fetchall()]
-    
-    def update_batch_materials(self, batch_id, materials_data):
-        conn = self.connect()
-        for item in materials_data: conn.execute("UPDATE batch_materials_used SET batch_number=?, expiry_date=? WHERE batch_id=? AND ingredient_name=?", (item.get('batch_number',''), item.get('expiry_date',''), batch_id, item['ingredient_name']))
-        conn.commit(); conn.close()
-    
-    def start_batch(self, batch_id, started_by=""):
-        conn = self.connect()
-        conn.execute("UPDATE production_batches SET status='active', start_time=? WHERE id=?", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), batch_id)); conn.commit(); conn.close()
-    
-    def save_batch_file(self, batch_id, filename, file_data, file_type):
-        conn = self.connect()
-        conn.execute("INSERT INTO batch_files (batch_id, filename, file_data, file_type) VALUES (?,?,?,?)", (batch_id, filename, file_data, file_type)); conn.commit(); conn.close()
-    
-    def get_batch_files(self, batch_id):
-        conn = self.connect()
-        return [self.dict_from_row(r) for r in conn.execute("SELECT id, filename, file_type, uploaded_at FROM batch_files WHERE batch_id=?", (batch_id,)).fetchall()]
-    
-    def complete_batch(self, batch_id, units, notes="", completed_by=""):
-        conn = self.connect()
-        batch = conn.execute("SELECT * FROM production_batches WHERE id=?", (batch_id,)).fetchone()
-        if not batch or not batch['start_time']: conn.close(); return False, {}
-        start = datetime.strptime(batch['start_time'], "%Y-%m-%d %H:%M:%S")
-        elapsed = (datetime.now() - start).total_seconds()/3600
-        conn.execute("UPDATE production_batches SET status='completed', end_time=?, time_spent=?, units_produced=?, notes=?, completed_by=? WHERE id=?", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), elapsed, int(units), notes, completed_by, batch_id))
-        low_stock_alerts = []
-        for m in conn.execute("SELECT * FROM batch_materials_used WHERE batch_id=?", (batch_id,)).fetchall():
-            mat = conn.execute("SELECT id, name, stock_quantity, reorder_quantity FROM raw_materials WHERE LOWER(name)=LOWER(?)", (m['ingredient_name'],)).fetchone()
-            if mat:
-                new_stock = max(0, mat['stock_quantity']-m['quantity_used'])
-                conn.execute("UPDATE raw_materials SET stock_quantity=? WHERE id=?", (new_stock, mat['id']))
-                if new_stock < mat['reorder_quantity']: low_stock_alerts.append(f"{mat['name']}: {new_stock:.1f}g")
-        prod_name = conn.execute("SELECT name FROM products WHERE id=?", (batch['product_id'],)).fetchone()['name']
-        report = {'batch_number': batch['batch_number'], 'product_name': prod_name, 'completed_by': completed_by, 'time_spent': round(elapsed, 2), 'units_produced': int(units), 'low_stock_alerts': '; '.join(low_stock_alerts) if low_stock_alerts else 'None'}
-        conn.execute("INSERT INTO batch_completion_reports (batch_id, batch_number, product_name, completed_by, time_spent, units_produced, low_stock_alerts) VALUES (?,?,?,?,?,?,?)", (batch_id, report['batch_number'], report['product_name'], report['completed_by'], report['time_spent'], report['units_produced'], report['low_stock_alerts']))
-        conn.commit(); conn.close(); return True, report
-    
-    def get_completion_reports(self):
-        conn = self.connect()
-        return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM batch_completion_reports ORDER BY completed_at DESC").fetchall()]
-    
-    def get_completion_reports_csv(self):
-        reports = self.get_completion_reports()
-        if not reports: return None
-        return pd.DataFrame(reports).to_csv(index=False)
-    
-    def save_unmapped_data(self, sheet_name, df, mapped_columns):
-        conn = self.connect()
-        all_cols = df.columns.tolist()
-        unmapped = [c for c in all_cols if c not in mapped_columns]
-        for col in unmapped:
-            sample = '|'.join([str(v) for v in df[col].dropna().head(50).tolist()])
-            existing = conn.execute("SELECT id FROM unmapped_data WHERE sheet_name=? AND column_name=?", (sheet_name, col)).fetchone()
-            if existing:
-                conn.execute("UPDATE unmapped_data SET sample_data=? WHERE id=?", (sample, existing[0]))
-            else:
-                conn.execute("INSERT INTO unmapped_data (sheet_name, column_name, sample_data) VALUES (?,?,?)", (sheet_name, col, sample))
-        conn.commit(); conn.close()
-    
-    def get_unmapped_data(self):
-        conn = self.connect()
-        return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM unmapped_data ORDER BY created_at DESC").fetchall()]
-    
-    def save_instructions(self, product_id, instructions, safety=""):
-        conn = self.connect()
-        ex = conn.execute("SELECT id FROM production_instructions WHERE product_id=?", (product_id,)).fetchone()
-        if ex: conn.execute("UPDATE production_instructions SET instructions=?, safety_notes=? WHERE product_id=?", (instructions, safety, product_id))
-        else: conn.execute("INSERT INTO production_instructions (product_id, instructions, safety_notes) VALUES (?,?,?)", (product_id, instructions, safety))
-        conn.commit(); conn.close()
-    
-    def get_instructions(self, product_id):
-        conn = self.connect()
-        r = conn.execute("SELECT * FROM production_instructions WHERE product_id=?", (product_id,)).fetchone()
-        conn.close(); return self.dict_from_row(r)
-    
-    def create_restock_request(self, ingredient_name, quantity_needed, estimated_cost):
-        conn = self.connect()
-        conn.execute("INSERT INTO restock_requests (ingredient_name, quantity_needed, estimated_cost) VALUES (?,?,?)", (ingredient_name, quantity_needed, estimated_cost)); conn.commit(); conn.close()
-    
-    def get_restock_requests(self):
-        conn = self.connect()
-        return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM restock_requests ORDER BY requested_at DESC").fetchall()]
-    
-    def save_ops_note(self, note_text, note_type="general"):
-        conn = self.connect()
-        conn.execute("INSERT INTO ops_notes (note_text, note_type) VALUES (?,?)", (note_text, note_type)); conn.commit(); conn.close()
-    
-    def get_ops_notes(self):
-        conn = self.connect()
-        return [self.dict_from_row(r) for r in conn.execute("SELECT * FROM ops_notes ORDER BY created_at DESC LIMIT 20").fetchall()]
-    
-    def get_total_units_produced(self):
-        conn = self.connect()
-        return conn.execute("SELECT COALESCE(SUM(units_produced), 0) FROM production_batches WHERE status='completed'").fetchone()[0]
-    
-    def get_production_capacity(self):
-        prods = self.get_all_products(); mats = self.get_all_materials()
-        capacity = {'can_produce': [], 'cannot_produce': []}
-        for p in prods:
-            ings = self.get_formula(p['id'])
-            if not ings: continue
-            can_make = True
-            for ing in ings:
-                mat = next((m for m in mats if m['name'].lower() == ing['ingredient_name'].lower()), None)
-                if mat:
-                    needed = (ing['percentage']/100) * 1000
-                    if mat['stock_quantity'] < needed: can_make = False
-            if can_make: capacity['can_produce'].append({'name': p['name'], 'id': p['id']})
-            else: capacity['cannot_produce'].append({'name': p['name'], 'id': p['id']})
-        return capacity
-    
-    def get_insights_data(self):
-        batches = self.get_batches()
-        completed = [b for b in batches if b['status'] == 'completed']
-        ingredient_usage = {}
-        for b in completed:
-            for m in self.get_batch_materials(b['id']):
-                ing = m['ingredient_name']
-                if ing not in ingredient_usage: ingredient_usage[ing] = 0
-                ingredient_usage[ing] += m['quantity_used']
-        product_margins = {}
-        for b in completed:
-            ca = self.get_cost_analysis(b['product_name'])
-            revenue = (b.get('units_produced', 0) * ca.get('selling_price_unit', 0)) if ca else 0
-            cost = b.get('total_batch_cost', 0)
-            pn = b['product_name']
-            if pn not in product_margins: product_margins[pn] = {'revenue': 0, 'cost': 0, 'profit': 0, 'units': 0}
-            product_margins[pn]['revenue'] += revenue; product_margins[pn]['cost'] += cost; product_margins[pn]['profit'] += revenue - cost; product_margins[pn]['units'] += b.get('units_produced', 0)
-        for pn in product_margins:
-            if product_margins[pn]['revenue'] > 0: product_margins[pn]['margin'] = product_margins[pn]['profit'] / product_margins[pn]['revenue'] * 100
-        return {'ingredient_usage': ingredient_usage, 'product_margins': product_margins, 'completed_count': len(completed)}
-
-# ============================================================================
-# DATA PARSER
-# ============================================================================
-
-class DataParser:
-    @staticmethod
-    def detect_category(df, sheet_name=""):
-        cols = ' '.join([c.lower().strip() for c in df.columns])
-        if any(k in cols for k in ['supplier1','supplier2','price/unit']): return 'suppliers'
-        if any(k in cols for k in ['cost of raw materials','gross profit','selling price']): return 'cost_analysis'
-        if any(k in cols for k in ['container price','cap/lid','labeling']): return 'packaging'
-        fs = sum(1 for k in ['ingredient','percentage','%'] if k in cols or k in sheet_name.lower())
-        ms = sum(1 for k in ['stock','quantity','inventory'] if k in cols or k in sheet_name.lower())
-        return 'formulas' if fs>=ms and fs>0 else ('materials' if ms>0 else 'unknown')
-    
-    @staticmethod
-    def clean_pct(v):
-        if pd.isna(v): return 0
-        if isinstance(v,str): v = v.strip().replace('%','')
-        try: n = float(v); return n*100 if 0<n<=1 else n
-        except: return 0
-
-# ============================================================================
-# RBAC
-# ============================================================================
-
-class RBAC:
-    PERMS = {
-        'business_owner': {'data':1,'ops':1,'production':1,'insights':1,'import':1,'edit_formula':1,'view_pct':1,'edit_inv':1,'add_inv':1,'remove_inv':1,'queue':1,'start':1,'complete':1,'instructions':1,'restock':1,'download':1},
-        'production_manager': {'data':1,'ops':1,'production':1,'insights':1,'import':1,'edit_formula':1,'view_pct':1,'edit_inv':1,'add_inv':0,'remove_inv':0,'queue':1,'start':1,'complete':0,'instructions':0,'restock':1,'download':0},
-        'factory_worker': {'data':0,'ops':0,'production':1,'insights':0,'import':0,'edit_formula':0,'view_pct':0,'edit_inv':1,'add_inv':0,'remove_inv':0,'queue':0,'start':1,'complete':1,'instructions':0,'restock':0,'download':0}
-    }
-    @classmethod
-    def can(cls, role, perm): return cls.PERMS.get(role,{}).get(perm,0)
-
-# ============================================================================
-# UI - SIDEBAR
-# ============================================================================
-
-def render_sidebar(db):
-    st.sidebar.markdown(f'<div style="text-align:center;padding:20px;"><h2 style="color:{COLORS["primary"]};">🌿 Inventilytics </h2></div>', unsafe_allow_html=True)
-    
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("👤 Select Role")
-    roles = {'business_owner': '💼 Business Owner', 'production_manager': '📋 Production Manager', 'factory_worker': '👷 Factory Worker'}
-    
-    if 'role' not in st.session_state:
-        st.session_state.role = 'business_owner'
-    
-    selected_role = st.sidebar.selectbox("Role:", list(roles.keys()), format_func=lambda x: roles[x], index=list(roles.keys()).index(st.session_state.role), key="role_selector")
-    st.session_state.role = selected_role
-    
-    rc = f"role-{selected_role.split('_')[0]}" if '_' in selected_role else "role-owner"
-    st.sidebar.markdown(f'<div class="user-info-card"><p><span class="role-badge {rc}">{roles[selected_role]}</span></p></div>', unsafe_allow_html=True)
-    
-    if RBAC.can(selected_role, 'import'):
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("📥 Data Upload")
-        uf = st.sidebar.file_uploader("Excel/CSV/ZIP files", type=['xlsx','xls','csv','zip'], accept_multiple_files=True, key="sfu", label_visibility="collapsed")
-        if uf and st.sidebar.button("🔍 Process Files", type="primary", use_container_width=True):
-            sheets = []
-            for f in uf:
-                try:
-                    if f.name.endswith('.zip'):
-                        with zipfile.ZipFile(f) as zf:
-                            for fn in zf.namelist():
-                                if fn.endswith('.csv'): df=pd.read_csv(zf.open(fn)); sheets.append({'name':fn.replace('.csv',''),'df':df,'source':f.name})
-                                elif fn.endswith(('.xlsx','.xls')): df=pd.read_excel(zf.open(fn)); sheets.append({'name':fn,'df':df,'source':f.name})
-                    elif f.name.endswith('.csv'): df=pd.read_csv(f); sheets.append({'name':f.name.replace('.csv',''),'df':df,'source':f.name})
-                    else:
-                        for sn in pd.ExcelFile(f).sheet_names: df=pd.read_excel(f,sheet_name=sn); sheets.append({'name':sn,'df':df,'source':f.name})
-                except Exception as e: st.sidebar.error(f"Error: {f.name}")
-            for s in sheets: s['category']=DataParser.detect_category(s['df'],s['name'])
-            st.session_state.pending_sheets=sheets; st.session_state.show_mapping=True; st.rerun()
-    
-    if selected_role in ['business_owner','production_manager']:
-        st.sidebar.markdown("---"); st.sidebar.subheader("📊 Status")
-        s=db.get_stats()
-        c1,c2=st.sidebar.columns(2)
-        c1.metric("Products",s['products']); c1.metric("Materials",s['raw_materials']); c2.metric("Ingredients",s['formula_ingredients']); c2.metric("Suppliers",s['suppliers'])
-    
-    return selected_role
-
-# ============================================================================
-# UI - WELCOME, MAPPING, DATA CENTRE, OPERATIONS, PRODUCTION
-# (Same as previous version - kept for brevity)
-# ============================================================================
-
-def render_welcome_page():
-    st.markdown(f"<h1 style='text-align:center;color:{COLORS['primary']};'>🌿 Welcome to Inventilytics !</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center;'>Select your role and upload Excel/CSV/ZIP files via sidebar to begin.</p>", unsafe_allow_html=True)
-
-def render_mapping(db):
-    st.subheader("🔧 Column Mapping")
-    if not st.session_state.get('pending_sheets'): return
-    sti = []
-    for i, s in enumerate(st.session_state.pending_sheets):
-        df = s['df']; sheet_name = s['name']
-        with st.expander(f"📄 {sheet_name}", expanded=True):
-            st.dataframe(df.head(3), use_container_width=True)
-            dc = s.get('category', 'unknown')
-            co = ['formulas', 'materials', 'packaging', 'cost_analysis', 'suppliers', 'unknown']
-            try: di = co.index(dc)
-            except: di = 5
-            cat = st.selectbox("Category", co, index=di, key=f"cat_{i}")
-            ign = st.checkbox(f"☐ Ignore: **{sheet_name}**", key=f"ign_{i}")
-            if not ign and cat != 'unknown':
-                mp = {}; cols = df.columns.tolist(); mapped_cols = []
-                if cat == 'formulas':
-                    ic = next((c for c in cols if 'ingredient' in c.lower()), cols[0] if cols else None)
-                    if ic: mp['ingredient_name'] = st.selectbox("Ingredient", cols, index=cols.index(ic) if ic in cols else 0, key=f"in_{i}"); mapped_cols.append(ic)
-                    pc = next((c for c in cols if '%' in c.lower() or 'percent' in c.lower()), cols[1] if len(cols) > 1 else (cols[0] if cols else None))
-                    if pc: mp['percentage'] = st.selectbox("%", cols, index=cols.index(pc) if pc in cols else 0, key=f"pct_{i}"); mapped_cols.append(pc)
-                elif cat == 'materials':
-                    nc = next((c for c in cols if 'name' in c.lower() or 'material' in c.lower()), cols[0] if cols else None)
-                    if nc: mp['name'] = st.selectbox("Name", cols, index=cols.index(nc) if nc in cols else 0, key=f"mn_{i}"); mapped_cols.append(nc)
-                    sc = next((c for c in cols if 'stock' in c.lower() or 'quantity' in c.lower()), cols[1] if len(cols) > 1 else (cols[0] if cols else None))
-                    if sc: mp['stock_quantity'] = st.selectbox("Stock", cols, index=cols.index(sc) if sc in cols else 0, key=f"ms_{i}"); mapped_cols.append(sc)
-                elif cat == 'packaging':
-                    pc = next((c for c in cols if 'product' in c.lower()), cols[0] if cols else None)
-                    if pc: mp['product_name'] = st.selectbox("Product", cols, index=cols.index(pc) if pc in cols else 0, key=f"pn_{i}"); mapped_cols.append(pc)
-                    for fld, kw, ky in [("Container", "container", "container_price"), ("Cap/Lid", "cap", "cap_price"), ("Labeling", "label", "label_cost")]:
-                        mc = next((c for c in cols if kw in c.lower()), None); mp[ky] = st.selectbox(fld, ['None'] + cols, index=cols.index(mc) + 1 if mc and mc in cols else 0, key=f"pk_{ky}_{i}")
-                        if mc and mp[ky] != 'None': mapped_cols.append(mc)
-                elif cat == 'cost_analysis':
-                    pc = next((c for c in cols if 'product' in c.lower()), cols[0] if cols else None)
-                    if pc: mp['product_name'] = st.selectbox("Product", cols, index=cols.index(pc) if pc in cols else 0, key=f"cn_{i}"); mapped_cols.append(pc)
-                    for fld, trms in [('raw_material_cost_batch', ['raw material']), ('units_produced', ['units']), ('selling_price_unit', ['selling price']), ('labour_cost_hour', ['labour'])]:
-                        mc = next((c for c in cols if any(t in c.lower() for t in trms)), None); mp[fld] = st.selectbox(fld.replace('_', ' ').title(), ['None'] + cols, index=cols.index(mc) + 1 if mc and mc in cols else 0, key=f"cf_{fld}_{i}")
-                        if mc and mp[fld] != 'None': mapped_cols.append(mc)
-                if mp:
-                    cdf = pd.DataFrame()
-                    for k, col in mp.items():
-                        if col and col != 'None' and col in df.columns: cdf[k] = df[col]
-                    if not cdf.empty: st.caption("Preview:"); st.dataframe(cdf.head(5), use_container_width=True)
-                db.save_unmapped_data(sheet_name, df, mapped_cols)
-                sti.append({'name': sheet_name, 'category': cat, 'data': df, 'mapping': mp, 'ignore': False})
-            elif ign: sti.append({'name': sheet_name, 'ignore': True})
-    
-    if sti and st.button("💾 Save and Import All", type="primary", use_container_width=True):
-        ir = []
-        for sd in sti:
-            if sd.get('ignore'): ir.append({'sheet': sd['name'], 'status': 'ignored'}); continue
+# ============ ROBUST NLTK SETUP ============
+@st.cache_resource
+def setup_nltk():
+    """Download and setup NLTK data with fallbacks."""
+    for resource in ['punkt', 'stopwords', 'vader_lexicon', 'punkt_tab']:
+        try:
+            nltk.data.find(f'tokenizers/{resource}' if resource == 'punkt' else
+                          f'corpora/{resource}' if resource == 'stopwords' else
+                          f'sentiment/{resource}' if resource == 'vader_lexicon' else
+                          f'tokenizers/{resource}')
+        except LookupError:
             try:
-                df = sd['data'].copy(); cat = sd['category']; mp = sd['mapping']; sn = cat.replace('_', ' ').title()
-                if cat == 'formulas':
-                    pn = sd['name']
-                    if db.has_formula(pn): ir.append({'sheet': sd['name'], 'status': 'skipped'}); continue
-                    cdf = pd.DataFrame()
-                    if 'ingredient_name' in mp: cdf['ingredient_name'] = df[mp['ingredient_name']]
-                    if 'percentage' in mp: cdf['percentage'] = df[mp['percentage']].apply(DataParser.clean_pct)
-                    if not cdf.empty: db.save_formula(pn, cdf); ir.append({'sheet': sd['name'], 'status': 'imported', 'section': sn})
-                elif cat == 'materials':
-                    cdf = pd.DataFrame()
-                    if 'name' in mp: cdf['name'] = df[mp['name']]
-                    if 'stock_quantity' in mp: cdf['stock_quantity'] = pd.to_numeric(df[mp['stock_quantity']], errors='coerce').fillna(0)
-                    if not cdf.empty: db.save_materials(cdf); ir.append({'sheet': sd['name'], 'status': 'imported', 'section': sn})
-                elif cat == 'packaging':
-                    cdf = pd.DataFrame()
-                    if 'product_name' in mp: cdf['product_name'] = df[mp['product_name']]
-                    tc = pd.Series(0.0, index=df.index)
-                    for pc in ['container_price', 'cap_price', 'label_cost']:
-                        if pc in mp and mp[pc] != 'None': tc += pd.to_numeric(df[mp[pc]], errors='coerce').fillna(0)
-                    cdf['total_packaging_cost'] = tc
-                    if not cdf.empty: db.save_packaging(cdf[['product_name', 'total_packaging_cost']]); ir.append({'sheet': sd['name'], 'status': 'imported', 'section': sn})
-                elif cat == 'cost_analysis':
-                    cdf = pd.DataFrame()
-                    if 'product_name' in mp: cdf['product_name'] = df[mp['product_name']]
-                    for f in ['raw_material_cost_batch', 'units_produced', 'selling_price_unit', 'labour_cost_hour']:
-                        if f in mp and mp[f] != 'None': cdf[f] = pd.to_numeric(df[mp[f]], errors='coerce').fillna(0)
-                    if not cdf.empty: db.save_cost_analysis(cdf); ir.append({'sheet': sd['name'], 'status': 'imported', 'section': sn})
-            except Exception as e: ir.append({'sheet': sd['name'], 'status': 'error', 'reason': str(e)})
-        db.calculate_reorder()
-        st.session_state.import_results = ir; st.session_state.show_mapping = False; st.session_state.pending_sheets = []; st.session_state.data_ok = True; st.rerun()
+                nltk.download(resource, quiet=True)
+            except:
+                pass
 
-def render_data_centre(db):
-    st.header("🖥️ Data Command Centre")
-    if st.session_state.get('import_results'):
-        with st.expander("📋 Last Import Results", expanded=True):
-            for r in st.session_state.import_results:
-                if r['status'] == 'imported': st.success(f"✅ **{r['sheet']}** → {r.get('section', 'Imported')}")
-                elif r['status'] == 'skipped': st.warning(f"⚠️ **{r['sheet']}**")
-                elif r['status'] == 'error': st.error(f"❌ **{r['sheet']}**")
-    if st.session_state.get('pending_sheets'): render_mapping(db)
-    else: st.info("📤 Upload files via sidebar, then click 'Process Files'.")
+setup_nltk()
 
-# ============================================================================
-# UI - INSIGHTS HUB (Tab 2) - ENHANCED DATA MATCHING
-# ============================================================================
+# Initialize session state
+if 'analysis_results' not in st.session_state:
+    st.session_state.analysis_results = None
+if 'file_uploaded' not in st.session_state:
+    st.session_state.file_uploaded = False
+if 'current_archetype' not in st.session_state:
+    st.session_state.current_archetype = None
 
-def render_insights(db):
-    st.header("📊 Insights & Reports")
-    role = st.session_state.get('role', '')
-    
-    # Sub-tabs within Insights
-    ins_tab = st.radio("Section:", ["📊 Analytics & Charts", "🔗 Data Matching Hub", "📋 Reports"], horizontal=True, key="ins_tab")
-    
-    if ins_tab == "🔗 Data Matching Hub":
-        render_data_matching_hub(db)
-        return
-    
-    if ins_tab == "📋 Reports":
-        render_reports_section(db, role)
-        return
-    
-    # Analytics & Charts (default)
-    insights_data = db.get_insights_data()
-    batches = db.get_batches()
-    completed = [b for b in batches if b['status'] == 'completed']
-    total_units = db.get_total_units_produced()
-    
-    q, a, c = sum(1 for b in batches if b['status']=='queued'), sum(1 for b in batches if b['status']=='active'), len(completed)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("📋 Queued", q); c2.metric("🔄 Active", a); c3.metric("✅ Completed", c); c4.metric("📦 Total Units", total_units)
-    
-    # Product Cost Analysis with Charts
-    st.markdown("---")
-    st.markdown("## 📊 Product Cost Analysis")
-    mats = db.get_all_materials()
-    prods = db.get_all_products()
-    for p in prods:
-        ings = db.get_formula(p['id'])
-        if not ings: continue
-        ca = db.get_cost_analysis(p['name']); pkg = db.get_packaging_cost(p['name'])
-        with st.expander(f"📦 {p['name']} - Cost Breakdown", expanded=False):
-            chart_type = st.radio("Chart:", ["📊 Bar", "🥧 Pie"], horizontal=True, key=f"ct_{p['id']}")
-            cost_data = []; total_mat_cost = 0
-            for i in ings:
-                mat = next((m for m in mats if m['name'].lower() == i['ingredient_name'].lower()), None)
-                cpu = mat['cost_per_unit'] if mat else 0; qpb = (i['percentage']/100) * DEFAULT_BATCH_SIZE; ic = (qpb / 1000) * cpu if cpu else 0; total_mat_cost += ic
-                cost_data.append({'Ingredient': i['ingredient_name'], '%': i['percentage'], 'Weight (g)': qpb, 'Cost/g (R)': cpu, 'Cost/Batch (R)': ic})
-            if cost_data:
-                cdf = pd.DataFrame(cost_data)
-                st.dataframe(cdf[['Ingredient', '%', 'Weight (g)', 'Cost/g (R)', 'Cost/Batch (R)']], use_container_width=True, hide_index=True)
-                col1, col2 = st.columns(2)
-                with col1:
-                    if chart_type == "📊 Bar":
-                        fig = px.bar(cdf, x='Ingredient', y='Weight (g)', title='Weight by Ingredient', color_discrete_sequence=[COLORS['primary']])
-                    else: fig = px.pie(cdf, values='Weight (g)', names='Ingredient', title='Weight Distribution')
-                    fig.update_layout(plot_bgcolor=COLORS['bg_beige'], paper_bgcolor=COLORS['bg_beige']); st.plotly_chart(fig, use_container_width=True)
-                with col2:
-                    if chart_type == "📊 Bar":
-                        fig2 = px.bar(cdf, x='Ingredient', y='Cost/Batch (R)', title='Cost by Ingredient', color_discrete_sequence=[COLORS['accent']])
-                    else: fig2 = px.pie(cdf, values='Cost/Batch (R)', names='Ingredient', title='Cost Distribution')
-                    fig2.update_layout(plot_bgcolor=COLORS['bg_beige'], paper_bgcolor=COLORS['bg_beige']); st.plotly_chart(fig2, use_container_width=True)
-                
-                units = ca.get('units_produced', 10) if ca else 10; sp_val = ca.get('selling_price_unit', 0) if ca else 0
-                lc_val = (ca.get('labour_cost_hour', 0) * (ca.get('production_time_hours', 1) or 1)) if ca else 0
-                tc_val = total_mat_cost + pkg + lc_val; cost_per_g = total_mat_cost / DEFAULT_BATCH_SIZE if DEFAULT_BATCH_SIZE > 0 else 0
-                rev = units * sp_val; prof = rev - tc_val; mar = (prof / rev * 100) if rev > 0 else 0
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Material/Batch", f"R{total_mat_cost:.2f}"); c2.metric("Total Cost", f"R{tc_val:.2f}"); c3.metric("Cost/g", f"R{cost_per_g:.2f}"); c4.metric("Price/Unit", f"R{sp_val:.2f}")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Revenue", f"R{rev:.2f}"); c2.metric("Profit", f"R{prof:.2f}"); c3.metric("Margin", f"{mar:.1f}%")
+st.set_page_config(
+    page_title="AI Chat Coach - Your Personal AI Usage Analyst",
+    page_icon="🧠",
+    layout="wide"
+)
 
-def render_data_matching_hub(db):
-    """Comprehensive data matching interface"""
-    st.subheader("🔗 Data Matching Hub")
-    st.caption("Match your uploaded data columns to business metrics for complete operational context.")
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #6C63FF;
+        text-align: center;
+        margin-bottom: 0.5rem;
+    }
+    .sub-header {
+        font-size: 1.5rem;
+        color: #6C63FF;
+        border-bottom: 2px solid #6C63FF;
+        padding-bottom: 0.2rem;
+        margin-top: 2rem;
+    }
+    .archetype-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 1rem;
+        color: white;
+        text-align: center;
+        margin: 1rem 0;
+    }
+    .archetype-name {
+        font-size: 2.5rem;
+        font-weight: bold;
+    }
+    .archetype-desc {
+        font-size: 1.1rem;
+        opacity: 0.9;
+        margin-top: 0.5rem;
+    }
+    .stat-card {
+        background-color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        text-align: center;
+        border: 1px solid #dee2e6;
+    }
+    .stat-value {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #6C63FF;
+    }
+    .stat-label {
+        font-size: 0.9rem;
+        color: #6c757d;
+    }
+    .insight-box {
+        background-color: #e8f4fd;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #6C63FF;
+        margin: 0.5rem 0;
+    }
+    .message-card {
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin: 0.5rem 0;
+    }
+    .message-card.user {
+        border-left: 4px solid #6C63FF;
+    }
+    .message-card.ai {
+        border-left: 4px solid #28a745;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ============ JSON PARSER ============
+def parse_chat_json(json_data):
+    """Parse nested JSON structure with mapping and fragments."""
+    records = []
     
-    # Get all uploaded sheets
-    sheets = db.get_uploaded_sheets()
-    prods = db.get_all_products()
+    if isinstance(json_data, str):
+        try:
+            json_data = json.loads(json_data)
+        except json.JSONDecodeError:
+            return None
     
-    if not sheets:
-        st.warning("No data uploaded yet. Please upload Excel/CSV files first via the sidebar.")
-        return
+    if isinstance(json_data, list):
+        for conversation in json_data:
+            records.extend(extract_from_conversation(conversation))
+    elif isinstance(json_data, dict):
+        records.extend(extract_from_conversation(json_data))
     
-    # Sheet selector
-    selected_sheet = st.selectbox("📄 Select Uploaded Sheet:", sheets, key="dm_sheet")
+    return pd.DataFrame(records) if records else None
+
+def extract_from_conversation(conv):
+    """Extract messages from a conversation object."""
+    records = []
+    conv_id = conv.get('id', '')
+    conv_title = conv.get('title', '')
     
-    if selected_sheet:
-        columns = db.get_sheet_columns(selected_sheet)
+    mapping = conv.get('mapping', {})
+    for node_id, node_data in mapping.items():
+        if node_data and 'message' in node_data:
+            message_data = node_data['message']
+            if message_data:
+                record = extract_message_from_node(message_data, conv_id, conv_title)
+                if record:
+                    records.append(record)
+    return records
+
+def extract_message_from_node(message_data, conv_id, conv_title):
+    """Extract message content from a node."""
+    if not message_data:
+        return None
+    record = {
+        'conversation_id': conv_id,
+        'conversation_title': conv_title,
+        'model': message_data.get('model', ''),
+        'inserted_at': message_data.get('inserted_at', ''),
+    }
+    fragments = message_data.get('fragments', [])
+    message_text = ''
+    for fragment in fragments:
+        if fragment.get('type') in ('RESPONSE', 'REQUEST'):
+            message_text += fragment.get('content', '')
+    record['message'] = message_text
+    record['message_length'] = len(message_text)
+    return record
+
+def build_conversation_flow(df):
+    """Build conversation flow by identifying user/AI turns."""
+    if df.empty:
+        return df
+    
+    if 'inserted_at' in df.columns:
+        df['inserted_at'] = pd.to_datetime(df['inserted_at'], errors='coerce')
+        df = df.sort_values('inserted_at').reset_index(drop=True)
+    
+    request_patterns = ['help me', 'write me', 'please', 'can you', 'could you', 'i need',
+                        'what is', 'how do', 'explain', 'list', 'tell me']
+    
+    for idx, row in df.iterrows():
+        msg = str(row.get('message', '')).lower()
+        if any(pattern in msg for pattern in request_patterns):
+            df.loc[idx, 'sender_type'] = 'user'
+        elif msg and len(msg) > 50:
+            df.loc[idx, 'sender_type'] = 'ai'
+        else:
+            df.loc[idx, 'sender_type'] = 'unknown'
+    
+    if not df.empty:
+        first_user_idx = df[df['sender_type'] == 'user'].index
+        if len(first_user_idx) > 0:
+            current_type = 'user'
+            for i in range(len(df)):
+                if pd.isna(df.loc[i, 'sender_type']):
+                    df.loc[i, 'sender_type'] = current_type
+                    current_type = 'ai' if current_type == 'user' else 'user'
+    
+    df['user'] = df['sender_type'].apply(lambda x: 'User' if x == 'user' else 'AI')
+    df['ai_interface'] = df['model'].apply(lambda x: x.split('-')[0] if x else 'DeepSeek')
+    return df
+
+# ============ SAFE TOKENIZATION ============
+def safe_word_tokenize(text):
+    try:
+        return word_tokenize(text)
+    except:
+        return text.split()
+
+def safe_sent_tokenize(text):
+    try:
+        return sent_tokenize(text)
+    except:
+        return text.split('.')
+
+# ============ DATA PROCESSING ============
+@st.cache_data
+def preprocess_text(text):
+    if not isinstance(text, str):
+        return ""
+    text = text.lower()
+    text = re.sub(r'http\S+', '', text)
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
+    return text
+
+@st.cache_data
+def analyze_sentiment_batch(texts):
+    try:
+        sia = SentimentIntensityAnalyzer()
+        return [sia.polarity_scores(t)['compound'] if isinstance(t, str) and t.strip() else 0 for t in texts]
+    except:
+        return [0] * len(texts)
+
+@st.cache_data
+def extract_topics(texts, n_topics=5, n_words=8):
+    """Extract topics using LDA."""
+    valid_texts = [t for t in texts if isinstance(t, str) and len(t.strip()) > 10]
+    if len(valid_texts) < 5:
+        return []
+    
+    if len(valid_texts) > 500:
+        valid_texts = valid_texts[:500]
+    
+    processed = [preprocess_text(t) for t in valid_texts]
+    processed = [t for t in processed if len(t) > 5]
+    if len(processed) < 3:
+        return []
+    
+    try:
+        vectorizer = TfidfVectorizer(max_features=200, stop_words='english')
+        tfidf = vectorizer.fit_transform(processed)
         
-        if columns:
-            st.markdown("---")
-            st.markdown(f"### 📊 Map Columns from '{selected_sheet}'")
-            
-            # Show sample data
-            with st.expander("👁️ View Sample Data from this Sheet", expanded=False):
-                for col in columns:
-                    sample = col['sample'][:100] if col['sample'] else 'No data'
-                    st.text(f"Column: {col['column']} | Sample: {sample}...")
-            
-            st.markdown("---")
-            
-            # For each category of business fields
-            for category, fields in BUSINESS_DATA_FIELDS.items():
-                with st.expander(f"📁 {category} ({len(fields)} fields)", expanded=False):
-                    # Show existing mappings for this category
-                    existing_mappings = [m for m in db.get_data_mappings() if m['sheet_name'] == selected_sheet and m['target_category'] == category]
-                    
-                    for field_key, field_label in fields.items():
-                        col1, col2, col3 = st.columns([2, 2, 1])
-                        
-                        with col1:
-                            st.markdown(f"**{field_label}**")
-                        
-                        with col2:
-                            # Check if already mapped
-                            existing = next((m for m in existing_mappings if m['target_field'] == field_key), None)
-                            current_value = existing['source_column'] if existing else None
-                            
-                            # Dropdown to select source column
-                            col_options = ['-- Select Column --'] + [c['column'] for c in columns]
-                            if current_value and current_value in [c['column'] for c in columns]:
-                                idx = [c['column'] for c in columns].index(current_value) + 1
-                            else:
-                                idx = 0
-                            
-                            selected_col = st.selectbox(
-                                f"Source",
-                                col_options,
-                                index=idx,
-                                key=f"dm_{selected_sheet}_{category}_{field_key}",
-                                label_visibility="collapsed"
-                            )
-                        
-                        with col3:
-                            # Option to enter manual value instead
-                            manual_val = st.text_input(
-                                "Manual",
-                                value=existing['manual_value'] if existing and existing.get('manual_value') else '',
-                                key=f"mv_{selected_sheet}_{category}_{field_key}",
-                                label_visibility="collapsed",
-                                placeholder="Or type value"
-                            )
-                        
-                        # Save mapping if changed
-                        if selected_col != '-- Select Column --' or manual_val:
-                            target_product = st.selectbox(
-                                "For Product:",
-                                ['General'] + [p['name'] for p in prods],
-                                key=f"tp_{selected_sheet}_{category}_{field_key}"
-                            )
-                            
-                            if st.button(f"💾 Save", key=f"sv_{selected_sheet}_{category}_{field_key}"):
-                                if selected_col != '-- Select Column --':
-                                    db.save_data_mapping(selected_sheet, selected_col, field_key, category, target_product)
-                                if manual_val:
-                                    db.save_business_data(target_product if target_product != 'General' else 'General', field_key, manual_val, category)
-                                st.success(f"✅ Saved {field_label}!")
-                                st.rerun()
-            
-            # Apply all mappings button
-            st.markdown("---")
-            if st.button("🚀 Apply All Mappings & Populate Business Data", type="primary", use_container_width=True):
-                count = db.apply_mappings_to_data(selected_sheet)
-                st.success(f"✅ Applied {count} data points from '{selected_sheet}' to business records!")
-                st.rerun()
-    
-    # Show current business data
-    st.markdown("---")
-    st.markdown("### 📋 Current Business Data Records")
-    all_bd = db.get_business_data()
-    if all_bd:
-        bd_df = pd.DataFrame(all_bd)
-        st.dataframe(bd_df, use_container_width=True, hide_index=True)
+        n_topics = min(n_topics, max(1, len(processed) // 3))
+        lda = LatentDirichletAllocation(n_components=n_topics, random_state=42)
+        lda.fit(tfidf)
         
-        # Allow manual editing
-        with st.expander("✏️ Manually Add/Edit Business Data", expanded=False):
-            st.markdown("Enter any missing data manually:")
-            product = st.selectbox("Product:", ['General'] + [p['name'] for p in prods], key="man_prod")
-            category = st.selectbox("Category:", list(BUSINESS_DATA_FIELDS.keys()), key="man_cat")
-            field = st.selectbox("Field:", list(BUSINESS_DATA_FIELDS[category].keys()), format_func=lambda x: BUSINESS_DATA_FIELDS[category][x], key="man_field")
-            value = st.text_input("Value:", key="man_val")
-            if st.button("💾 Save Manual Entry", type="primary"):
-                db.save_business_data(product, field, value, category)
-                st.success("✅ Saved!"); st.rerun()
+        feature_names = vectorizer.get_feature_names_out()
+        topics = []
+        for topic_idx, topic in enumerate(lda.components_):
+            top_words = [feature_names[i] for i in topic.argsort()[-n_words:][::-1]]
+            topics.append({
+                'topic': topic_idx + 1,
+                'words': top_words,
+                'weight': topic.sum() / lda.components_.sum()
+            })
+        return topics
+    except:
+        return []
+
+@st.cache_data
+def extract_keywords(texts, top_n=15):
+    try:
+        stop_words = set(stopwords.words('english'))
+    except:
+        stop_words = set()
+    all_words = []
+    sample_texts = texts[:500] if len(texts) > 500 else texts
+    for text in sample_texts:
+        if isinstance(text, str) and text.strip():
+            words = safe_word_tokenize(preprocess_text(text))
+            all_words.extend([w for w in words if w not in stop_words and len(w) > 2])
+    return Counter(all_words).most_common(top_n)
+
+@st.cache_data
+def extract_question_types(texts):
+    """Extract question types from messages with examples."""
+    question_patterns = {
+        'how': r'\bhow\b', 'what': r'\bwhat\b', 'why': r'\bwhy\b',
+        'when': r'\bwhen\b', 'where': r'\bwhere\b', 'who': r'\bwho\b',
+        'which': r'\bwhich\b', 'can': r'\bcan\b', 'could': r'\bcould\b',
+        'would': r'\bwould\b', 'will': r'\bwill\b', 'is': r'\bis\b',
+        'are': r'\bare\b', 'do': r'\bdo\b', 'does': r'\bdoes\b'
+    }
+    
+    question_counts = {k: {'count': 0, 'examples': []} for k in question_patterns}
+    total_questions = 0
+    
+    for text in texts:
+        if isinstance(text, str):
+            text_lower = text.lower()
+            for q_type, pattern in question_patterns.items():
+                if re.search(pattern, text_lower):
+                    question_counts[q_type]['count'] += 1
+                    total_questions += 1
+                    # Store example (truncated)
+                    if len(question_counts[q_type]['examples']) < 3:
+                        example = text[:200] + ('...' if len(text) > 200 else '')
+                        question_counts[q_type]['examples'].append(example)
+                    break
+    
+    return question_counts, total_questions
+
+@st.cache_data
+def get_longest_context_messages(df, n=5):
+    """Get the top N longest user messages and their corresponding AI responses."""
+    # Group by conversation
+    conversations = df.groupby('conversation_id')
+    
+    long_exchanges = []
+    for conv_id, conv_df in conversations:
+        conv_df = conv_df.sort_values('inserted_at')
+        user_msgs = conv_df[conv_df['sender_type'] == 'user'].copy()
+        ai_msgs = conv_df[conv_df['sender_type'] == 'ai'].copy()
+        
+        for idx, user_row in user_msgs.iterrows():
+            msg_length = len(str(user_row['message']))
+            # Find the next AI response after this user message
+            user_time = user_row['inserted_at']
+            ai_responses = ai_msgs[ai_msgs['inserted_at'] > user_time].head(1)
+            
+            if not ai_responses.empty:
+                ai_response = ai_responses.iloc[0]
+                combined_length = msg_length + len(str(ai_response['message']))
+                long_exchanges.append({
+                    'conversation_title': conv_df.iloc[0]['conversation_title'],
+                    'conversation_id': conv_id,
+                    'user_message': user_row['message'],
+                    'user_message_length': msg_length,
+                    'ai_response': ai_response['message'],
+                    'ai_response_length': len(str(ai_response['message'])),
+                    'combined_length': combined_length,
+                    'timestamp': user_time
+                })
+    
+    # Sort by combined length and return top N
+    long_exchanges.sort(key=lambda x: x['combined_length'], reverse=True)
+    return long_exchanges[:n]
+
+@st.cache_data
+def get_representative_conversations(df, n_longest=5, n_shortest=5):
+    """Get the longest and shortest conversations by total message count and length."""
+    conversations = df.groupby('conversation_id')
+    
+    conv_stats = []
+    for conv_id, conv_df in conversations:
+        total_chars = conv_df['message'].astype(str).str.len().sum()
+        msg_count = len(conv_df)
+        title = conv_df.iloc[0]['conversation_title']
+        
+        # Get a summary of the conversation content
+        user_messages = conv_df[conv_df['sender_type'] == 'user']['message'].tolist()
+        ai_messages = conv_df[conv_df['sender_type'] == 'ai']['message'].tolist()
+        
+        conv_stats.append({
+            'conversation_id': conv_id,
+            'title': title,
+            'total_chars': total_chars,
+            'msg_count': msg_count,
+            'user_messages': user_messages,
+            'ai_messages': ai_messages,
+            'keywords': extract_keywords(user_messages + ai_messages, 5)
+        })
+    
+    conv_stats.sort(key=lambda x: x['total_chars'], reverse=True)
+    longest = conv_stats[:n_longest]
+    shortest = conv_stats[-n_shortest:] if len(conv_stats) >= n_shortest else conv_stats
+    
+    return longest, shortest
+
+@st.cache_data
+def generate_themes_summary(question_counts, keywords, longest_convs):
+    """Generate themes summary using question types, keywords, and conversation analysis."""
+    themes = []
+    
+    # Analyze dominant question patterns
+    sorted_questions = sorted(question_counts.items(), key=lambda x: x[1]['count'], reverse=True)
+    dominant_q_types = [q[0] for q in sorted_questions[:5] if q[1]['count'] > 0]
+    
+    if 'how' in dominant_q_types and 'what' in dominant_q_types:
+        themes.append({
+            'theme': 'Practical Problem-Solving & Knowledge Seeking',
+            'description': 'You frequently ask "how" and "what" questions, indicating a strong drive to understand concepts and apply them practically.',
+            'confidence': 'High'
+        })
+    
+    if 'why' in dominant_q_types:
+        themes.append({
+            'theme': 'Deep Analytical Thinking',
+            'description': 'Your "why" questions suggest you seek to understand underlying causes and fundamental principles.',
+            'confidence': 'Medium'
+        })
+    
+    if 'can' in dominant_q_types or 'could' in dominant_q_types or 'would' in dominant_q_types:
+        themes.append({
+            'theme': 'Exploration of Possibilities',
+            'description': 'You explore what\'s possible with AI, testing boundaries and considering hypothetical scenarios.',
+            'confidence': 'High' if 'can' in dominant_q_types else 'Medium'
+        })
+    
+    # Analyze keywords for thematic clusters
+    if keywords:
+        tech_keywords = {'code', 'function', 'data', 'python', 'api', 'programming', 'software', 'development'}
+        creative_keywords = {'write', 'story', 'create', 'design', 'idea', 'creative', 'art', 'music'}
+        business_keywords = {'business', 'marketing', 'strategy', 'project', 'management', 'team', 'startup'}
+        
+        kw_set = set([k[0].lower() for k in keywords[:20]])
+        
+        if kw_set & tech_keywords:
+            themes.append({
+                'theme': 'Technology & Development Focus',
+                'description': 'Your vocabulary suggests strong engagement with technical topics, software development, or data-related work.',
+                'confidence': 'High' if len(kw_set & tech_keywords) > 3 else 'Medium'
+            })
+        
+        if kw_set & creative_keywords:
+            themes.append({
+                'theme': 'Creative & Content Creation',
+                'description': 'You use AI as a creative partner, exploring writing, design, or other creative endeavors.',
+                'confidence': 'Medium'
+            })
+        
+        if kw_set & business_keywords:
+            themes.append({
+                'theme': 'Business & Strategy',
+                'description': 'Your conversations show a focus on business planning, strategy, or professional development.',
+                'confidence': 'Medium'
+            })
+    
+    # Analyze longest conversations for deeper themes
+    if longest_convs:
+        all_kw = []
+        for conv in longest_convs:
+            all_kw.extend([k[0] for k in conv['keywords']])
+        
+        if all_kw:
+            top_long_kw = Counter(all_kw).most_common(3)
+            themes.append({
+                'theme': f'Deep Dive Areas: {", ".join([k[0] for k in top_long_kw])}',
+                'description': 'Your most extensive conversations revolve around these topics, suggesting areas of deep interest or complex problem-solving.',
+                'confidence': 'High'
+            })
+    
+    # Ensure we have at least some themes
+    if not themes:
+        themes.append({
+            'theme': 'Diverse AI Usage',
+            'description': 'Your conversations span various topics, showing a balanced and exploratory approach to AI interaction.',
+            'confidence': 'Medium'
+        })
+    
+    return themes
+
+@st.cache_data
+def generate_conversation_summary(conversation):
+    """Generate a brief summary of what a conversation was about."""
+    user_msgs = ' '.join(conversation['user_messages'][:3])
+    ai_msgs = ' '.join(conversation['ai_messages'][:3])
+    
+    # Extract key terms
+    keywords = conversation['keywords']
+    kw_str = ', '.join([k[0] for k in keywords[:3]])
+    
+    # Simple summary based on keywords and message patterns
+    summary = f"This conversation covers {kw_str}. "
+    
+    if len(conversation['user_messages']) > 5:
+        summary += f"With {len(conversation['user_messages'])} user messages, this was a detailed exchange. "
     else:
-        st.info("No business data records yet. Map your uploaded data above or enter manually.")
+        summary += f"It was a focused discussion with {len(conversation['user_messages'])} exchanges. "
+    
+    # Add context about question types
+    if any('how' in msg.lower() for msg in conversation['user_messages']):
+        summary += "You asked how-to questions, seeking practical guidance."
+    elif any('why' in msg.lower() for msg in conversation['user_messages']):
+        summary += "You explored underlying reasons and deeper understanding."
+    elif any('?' in msg for msg in conversation['user_messages']):
+        summary += "Your questions showed curiosity and engagement."
+    
+    return summary
 
-def render_reports_section(db, role):
-    """Reports section with batch summaries and downloads"""
-    st.subheader("📋 Reports")
-    
-    reports = db.get_completion_reports()
-    if reports:
-        st.markdown(f"### Batch Completion Reports ({len(reports)})")
-        st.dataframe(pd.DataFrame(reports), use_container_width=True, hide_index=True)
-        if RBAC.can(role, 'download'):
-            csv_data = db.get_completion_reports_csv()
-            if csv_data: st.download_button("📥 Download CSV", csv_data, "completion_reports.csv", "text/csv")
-    
-    # Batch Production Summary
-    batches = db.get_batches()
-    completed = [b for b in batches if b['status'] == 'completed']
-    if completed:
-        st.markdown("---")
-        st.markdown("### 📦 Batch Production Summary")
-        batch_summary = []
-        for b in completed:
-            ca = db.get_cost_analysis(b['product_name'])
-            revenue = (b.get('units_produced', 0) * ca.get('selling_price_unit', 0)) if ca else 0
-            batch_summary.append({'Batch': b['batch_number'], 'Product': b['product_name'], 'Weight (g)': b['batch_size'], 'Units': b.get('units_produced', 0), 'Cost (R)': f"{b.get('total_batch_cost', 0):.2f}", 'Revenue (R)': f"{revenue:.2f}" if revenue else 'N/A', 'Time (hrs)': f"{b.get('time_spent', 0):.1f}" if b.get('time_spent') else 'N/A', 'By': b.get('completed_by', 'N/A')})
-        st.dataframe(pd.DataFrame(batch_summary), use_container_width=True, hide_index=True)
-    
-    # Business Data Summary
-    all_bd = db.get_business_data()
-    if all_bd:
-        st.markdown("---")
-        st.markdown("### 📊 Business Data Summary")
-        st.dataframe(pd.DataFrame(all_bd), use_container_width=True, hide_index=True)
+@st.cache_data
+def identify_projects(texts):
+    """Identify potential projects from conversations."""
+    project_indicators = [
+        'project', 'build', 'create', 'develop', 'start', 'launch',
+        'plan', 'design', 'implement', 'setup', 'configure', 'campaign',
+        'initiative', 'movement', 'organize', 'coordinate', 'lead', 'manage'
+    ]
+    project_keywords = []
+    for text in texts[:200]:
+        if isinstance(text, str):
+            text_lower = text.lower()
+            for indicator in project_indicators:
+                if indicator in text_lower:
+                    words = text_lower.split()
+                    for i, word in enumerate(words):
+                        if word == indicator and i < len(words) - 1:
+                            project_keywords.append(words[i+1])
+    return Counter(project_keywords).most_common(10)
 
-# ============================================================================
-# UI - OPERATIONS HUB (Tab 3) - Same as previous version
-# ============================================================================
+@st.cache_data
+def calculate_growth_metrics(df):
+    """Calculate growth metrics over time."""
+    if 'inserted_at' not in df.columns or len(df) < 5:
+        return {}
+    df['inserted_at'] = pd.to_datetime(df['inserted_at'], errors='coerce')
+    df['date'] = df['inserted_at'].dt.date
+    daily_counts = df.groupby('date').size().reset_index(name='count')
+    growth_rate = ((daily_counts['count'].iloc[-1] - daily_counts['count'].iloc[0]) / 
+                   max(daily_counts['count'].iloc[0], 1)) * 100 if len(daily_counts) > 1 else 0
+    
+    sentiment_change = 0
+    if 'sentiment_score' in df.columns:
+        df['sentiment_score'] = pd.to_numeric(df['sentiment_score'], errors='coerce')
+        sentiment_trend = df.groupby('date')['sentiment_score'].mean().reset_index()
+        if len(sentiment_trend) > 1:
+            sentiment_change = sentiment_trend['sentiment_score'].iloc[-1] - sentiment_trend['sentiment_score'].iloc[0]
+    
+    question_growth = 0
+    if 'message' in df.columns:
+        daily_questions = df.groupby('date')['message'].apply(
+            lambda x: sum(1 for msg in x if isinstance(msg, str) and '?' in msg)
+        ).reset_index(name='questions')
+        if len(daily_questions) > 1:
+            question_growth = ((daily_questions['questions'].iloc[-1] - daily_questions['questions'].iloc[0]) / 
+                              max(daily_questions['questions'].iloc[0], 1)) * 100
+    
+    total_days = (df['inserted_at'].max() - df['inserted_at'].min()).days
+    return {'growth_rate': growth_rate, 'sentiment_change': sentiment_change,
+            'question_growth': question_growth, 'total_days': total_days}
 
-def render_operations_centre(db):
-    st.header("🏭 Operations Centre")
-    role = st.session_state.get('role', '')
-    if not RBAC.can(role, 'ops'): st.error("Access denied"); return
+# ============ COGNITIVE PROFILE GENERATOR ============
+def generate_cognitive_profile(question_counts, stats):
+    """Generate a paragraph describing how the user thinks based on question type distribution."""
+    total_q = sum(v['count'] for v in question_counts.values())
+    if total_q == 0:
+        return "We couldn't detect enough questions to analyze your thinking style. Ask more questions to reveal your cognitive patterns!"
+
+    pct = {k: (v['count'] / total_q) * 100 for k, v in question_counts.items()}
+
+    analytical = pct.get('why', 0) + pct.get('how', 0) * 0.8
+    practical = pct.get('how', 0) + pct.get('what', 0) * 0.6 + pct.get('can', 0)
+    exploratory = pct.get('what', 0) + pct.get('which', 0) + pct.get('where', 0) + pct.get('when', 0)
+    speculative = pct.get('would', 0) + pct.get('could', 0) + pct.get('will', 0)
+    clarifying = pct.get('is', 0) + pct.get('are', 0) + pct.get('do', 0) + pct.get('does', 0)
+
+    styles = {'analytical': analytical, 'practical': practical, 'exploratory': exploratory,
+              'speculative': speculative, 'clarifying': clarifying}
+    primary = max(styles, key=styles.get)
+    secondary = sorted(styles, key=styles.get, reverse=True)[1]
+
+    style_desc = {
+        'analytical': "You often ask **why** and **how** questions, demonstrating a deep need to understand underlying mechanisms and root causes.",
+        'practical': "Your questions lean toward **how** to accomplish tasks, indicating a pragmatic, solution-oriented mindset.",
+        'exploratory': "You frequently use **what**, **which**, and location/time words, showing a curious, information-gathering approach.",
+        'speculative': "You explore possibilities with **would**, **could**, and **will**, reflecting a forward-thinking, imaginative style.",
+        'clarifying': "You often ask for confirmation or definitions (is, are, do, does), suggesting a methodical, detail-focused way of processing information."
+    }
+
+    profile = f"**Your thinking style is primarily {primary}.** {style_desc[primary]} "
+    profile += f"As a secondary tendency, you also display a {secondary} streak. "
+    profile += f"This combination suggests that you approach problems by first "
+    if primary == 'analytical':
+        profile += "seeking deep understanding and then moving towards practical solutions or wider exploration."
+    elif primary == 'practical':
+        profile += "focusing on actionable steps, occasionally stepping back to explore broader contexts or confirm details."
+    elif primary == 'exploratory':
+        profile += "gathering diverse information before zeroing in on specific how-to questions or verifying facts."
+    elif primary == 'speculative':
+        profile += "imagining future scenarios and possibilities, then grounding them with clarifying or analytical questions."
+    else:
+        profile += "confirming the basics and then expanding into more analytical or exploratory territory."
+
+    profile += f" Overall, your questions span {total_q} inquiries, reflecting a rich and engaged relationship with AI."
+    return profile
+
+# ============ ARCHETYPE CLASSIFICATION ============
+def classify_archetype(df, stats):
+    """Classify user into an AI usage archetype."""
+    total_messages = len(df)
+    unique_interfaces = df['ai_interface'].nunique() if 'ai_interface' in df.columns else 0
+    avg_length = df['message'].astype(str).str.len().mean() if 'message' in df.columns else 0
+    avg_sentiment = stats.get('avg_sentiment', 0)
+    question_ratio = stats.get('question_ratio', 0)
     
-    op_tab = st.radio("Section:", ["📊 Capacity & Planning", "🧪 Formulas", "🏪 Suppliers & Restock", "📝 Notes"], horizontal=True, key="ops_tab")
+    organizing_keywords = ['organize', 'movement', 'community', 'leadership', 'coordinator', 'admin', 'mobilize']
+    organizing_mentions = sum(1 for msg in df['message'].tolist()[:100] if isinstance(msg, str) and any(kw in msg.lower() for kw in organizing_keywords))
     
-    if op_tab == "📊 Capacity & Planning":
-        st.markdown("## 📊 Production Capacity")
-        cap = db.get_production_capacity()
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"### ✅ Can Produce ({len(cap['can_produce'])})")
-            for p in cap['can_produce']: st.markdown(f'<div class="capacity-card can-produce"><strong>✅ {p["name"]}</strong></div>', unsafe_allow_html=True)
-        with col2:
-            st.markdown(f"### ❌ Cannot Produce ({len(cap['cannot_produce'])})")
-            for p in cap['cannot_produce']: st.markdown(f'<div class="capacity-card cannot-produce"><strong>❌ {p["name"]}</strong></div>', unsafe_allow_html=True)
+    if organizing_mentions > 5:
+        archetype = "The Community Organizer"
+        description = "You're focused on building and organizing communities. Your conversations show leadership and coordination skills."
+        traits = ["Community builder", "Strategic thinker", "Organizer"]
+        emoji = "🏛️"
+    elif total_messages > 200 and unique_interfaces > 1:
+        archetype = "The Power User"
+        description = "You're an AI power user who explores multiple interfaces and pushes boundaries."
+        traits = ["Multi-platform expert", "High-volume user", "Experimenter"]
+        emoji = "🚀"
+    elif avg_length > 100 and question_ratio > 0.4:
+        archetype = "The Deep Thinker"
+        description = "You ask thoughtful, complex questions and engage in deep, meaningful conversations."
+        traits = ["Detailed questions", "Complex reasoning", "Thoughtful responses"]
+        emoji = "🧠"
+    elif avg_sentiment > 0.2 and question_ratio < 0.3:
+        archetype = "The Curious Collaborator"
+        description = "You use AI as a friendly collaborator, exploring ideas in a positive, engaging way."
+        traits = ["Positive engagement", "Creative exploration", "Collaborative spirit"]
+        emoji = "🤝"
+    elif avg_length < 50 and total_messages > 50:
+        archetype = "The Efficient Executor"
+        description = "You're all about getting things done. Quick questions, fast answers."
+        traits = ["Brief queries", "Task-focused", "Efficient"]
+        emoji = "⚡"
+    else:
+        archetype = "The Balanced User"
+        description = "You have a well-rounded approach to AI usage, combining different types of queries."
+        traits = ["Versatile", "Balanced", "Adaptable"]
+        emoji = "⚖️"
+    
+    return {'name': archetype, 'description': description, 'traits': traits, 'emoji': emoji}
+
+def generate_wrapped_style_summary(df, stats, archetype, topics, keywords):
+    """Generate Spotify Wrapped-style summary."""
+    summary = {}
+    if 'inserted_at' in df.columns:
+        df['hour'] = pd.to_datetime(df['inserted_at']).dt.hour
+        peak_hour = df['hour'].mode().iloc[0] if not df['hour'].mode().empty else 12
+        if 5 <= peak_hour < 12: time_label = "Morning"
+        elif 12 <= peak_hour < 17: time_label = "Afternoon"
+        elif 17 <= peak_hour < 21: time_label = "Evening"
+        else: time_label = "Late Night"
+        summary['peak_time'] = f"{time_label} (around {peak_hour}:00)"
+    else:
+        summary['peak_time'] = "Various times"
+    
+    summary['top_topic'] = ", ".join(topics[0]['words'][:3]) if topics else "Various topics"
+    summary['top_keyword'] = keywords[0][0] if keywords else "exploring"
+    summary['total_messages'] = len(df)
+    summary['favorite_interface'] = df['ai_interface'].mode().iloc[0] if not df['ai_interface'].mode().empty else "DeepSeek"
+    
+    growth = stats.get('growth_metrics', {})
+    if growth.get('growth_rate', 0) > 20:
+        summary['growth_trend'] = "📈 Growing rapidly!"
+    elif growth.get('growth_rate', 0) > 5:
+        summary['growth_trend'] = "📊 Steady growth"
+    else:
+        summary['growth_trend'] = "📉 Stable usage"
+    
+    return summary
+
+# ============ MAIN APP ============
+def main():
+    st.markdown('<h1 class="main-header">🧠 AI Chat Coach</h1>', unsafe_allow_html=True)
+    st.markdown("""
+    <div style="text-align: center; margin-bottom: 2rem;">
+        Discover your AI usage patterns, growth, and personal development journey.
+        Upload your chat data for a comprehensive analysis.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    with st.sidebar:
+        st.header("⚙️ Settings")
+        uploaded_file = st.file_uploader("Upload JSON Chat File", type=['json'],
+                                         help="Upload a JSON file containing your chat data")
+        if uploaded_file:
+            try:
+                json_content = uploaded_file.read()
+                st.session_state.raw_json = json_content
+                st.session_state.file_uploaded = True
+                st.info(f"📁 File size: {len(json_content) / 1024 / 1024:.2f} MB")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+                st.session_state.file_uploaded = False
         
-        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-        st.markdown("## 📋 Production Planning")
-        prods = db.get_all_products(); mats = db.get_all_materials()
-        if prods and mats:
-            pd_data = []
-            for p in prods:
-                ings = db.get_formula(p['id'])
-                if not ings: continue
-                mu = float('inf')
-                for i in ings:
-                    mat = next((m for m in mats if m['name'].lower() == i['ingredient_name'].lower()), None)
-                    if mat:
-                        nd = (i['percentage'] / 100) * 100
-                        if nd > 0: mu = min(mu, mat['stock_quantity'] / nd)
-                mu = int(mu) if mu != float('inf') else 0
-                pd_data.append({'Product': p['name'], 'Product ID': p['id'], 'Batch Size': min(mu, 50), 'Max Possible': mu})
-            if pd_data:
-                pdf = pd.DataFrame(pd_data)
-                edf = st.data_editor(pdf, column_config={'Product': st.column_config.TextColumn(disabled=True), 'Product ID': st.column_config.NumberColumn(disabled=True), 'Batch Size': st.column_config.NumberColumn(min_value=0, step=1), 'Max Possible': st.column_config.NumberColumn(disabled=True)}, hide_index=True, use_container_width=True, key="ops_pp")
+        st.markdown("---")
+        if st.button("🎯 Analyze Me!", type="primary", use_container_width=True):
+            if st.session_state.file_uploaded:
+                with st.spinner("Analyzing your AI conversations..."):
+                    analyze_data(st.session_state.raw_json)
+            else:
+                st.warning("Please upload a JSON file first")
+        
+        st.markdown("---")
+        st.caption("Your data stays private. No information is stored.")
+    
+    if st.session_state.analysis_results is not None:
+        display_wrapped_analysis(st.session_state.analysis_results)
+    elif st.session_state.file_uploaded:
+        st.info("👈 Click 'Analyze Me!' to discover your AI usage patterns")
+    else:
+        st.info("👈 Upload your chat data to get started")
+
+def analyze_data(json_content):
+    """Analyze chat data and generate insights."""
+    try:
+        json_data = json.loads(json_content)
+        df = parse_chat_json(json_data)
+        if df is None or df.empty:
+            st.error("Could not parse the JSON file. Please check the format.")
+            return
+        
+        df = build_conversation_flow(df)
+        st.success(f"✅ Analyzing {len(df)} messages from {df['conversation_title'].nunique()} conversations")
+        
+        messages = df['message'].tolist()
+        sentiments = analyze_sentiment_batch(messages)
+        df['sentiment_score'] = sentiments
+        
+        stats = {
+            'total_messages': len(df),
+            'unique_users': df['user'].nunique() if 'user' in df.columns else 0,
+            'unique_interfaces': df['ai_interface'].nunique() if 'ai_interface' in df.columns else 0,
+            'avg_sentiment': df['sentiment_score'].mean(),
+            'avg_length': df['message'].astype(str).str.len().mean(),
+            'conversations': df['conversation_title'].nunique()
+        }
+        
+        question_counts, total_questions = extract_question_types(messages)
+        stats['question_ratio'] = total_questions / len(df) if len(df) > 0 else 0
+        cognitive_profile = generate_cognitive_profile(question_counts, stats)
+        
+        keywords = extract_keywords(messages, 15)
+        topics = extract_topics(messages, 4, 6)
+        
+        # Get longest context exchanges
+        long_exchanges = get_longest_context_messages(df, 5)
+        
+        # Get representative conversations
+        longest_convs, shortest_convs = get_representative_conversations(df, 5, 5)
+        
+        # Generate themes summary
+        themes = generate_themes_summary(question_counts, keywords, longest_convs)
+        
+        projects = identify_projects(messages)
+        growth_metrics = calculate_growth_metrics(df)
+        stats['growth_metrics'] = growth_metrics
+        
+        interface_stats = {}
+        if 'ai_interface' in df.columns:
+            for interface in df['ai_interface'].unique():
+                interface_df = df[df['ai_interface'] == interface]
+                interface_stats[interface] = {
+                    'count': len(interface_df),
+                    'avg_length': interface_df['message'].astype(str).str.len().mean(),
+                    'avg_sentiment': interface_df['sentiment_score'].mean()
+                }
+        
+        archetype = classify_archetype(df, stats)
+        st.session_state.current_archetype = archetype
+        summary = generate_wrapped_style_summary(df, stats, archetype, topics, keywords)
+        
+        st.session_state.analysis_results = {
+            'df': df,
+            'stats': stats,
+            'keywords': keywords,
+            'topics': topics,
+            'projects': projects,
+            'interface_stats': interface_stats,
+            'archetype': archetype,
+            'summary': summary,
+            'question_counts': question_counts,
+            'growth_metrics': growth_metrics,
+            'cognitive_profile': cognitive_profile,
+            'themes': themes,
+            'long_exchanges': long_exchanges,
+            'longest_convs': longest_convs,
+            'shortest_convs': shortest_convs
+        }
+        
+        gc.collect()
+        st.success("✅ Analysis complete!")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+
+def display_wrapped_analysis(results):
+    df = results['df']
+    stats = results['stats']
+    archetype = results['archetype']
+    summary = results['summary']
+    topics = results['topics']
+    keywords = results['keywords']
+    projects = results['projects']
+    interface_stats = results['interface_stats']
+    growth_metrics = results['growth_metrics']
+    question_counts = results['question_counts']
+    cognitive_profile = results['cognitive_profile']
+    themes = results['themes']
+    long_exchanges = results['long_exchanges']
+    longest_convs = results['longest_convs']
+    shortest_convs = results['shortest_convs']
+    
+    # ===== ARCHETYPE CARD =====
+    st.markdown(f"""
+    <div class="archetype-card">
+        <div style="font-size: 3rem;">{archetype['emoji']}</div>
+        <div class="archetype-name">Your AI Archetype: {archetype['name']}</div>
+        <div class="archetype-desc">{archetype['description']}</div>
+        <div style="margin-top: 0.5rem;">
+            {'  '.join([f'<span style="background: rgba(255,255,255,0.2); padding: 0.2rem 0.8rem; border-radius: 1rem; margin: 0.2rem;">{t}</span>' for t in archetype['traits']])}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ===== COGNITIVE PROFILE =====
+    st.markdown('<h2 class="sub-header">🧠 How You Think</h2>', unsafe_allow_html=True)
+    st.markdown(f'<div class="insight-box">{cognitive_profile}</div>', unsafe_allow_html=True)
+    
+    # ===== QUICK STATS =====
+    st.markdown('<h2 class="sub-header">📊 Your AI Usage Snapshot</h2>', unsafe_allow_html=True)
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown(f'<div class="stat-card"><div class="stat-value">{summary["total_messages"]}</div><div class="stat-label">Total Messages</div></div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown(f'<div class="stat-card"><div class="stat-value">{summary["favorite_interface"]}</div><div class="stat-label">Favorite AI</div></div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown(f'<div class="stat-card"><div class="stat-value">{summary["peak_time"]}</div><div class="stat-label">Peak Usage Time</div></div>', unsafe_allow_html=True)
+    with col4:
+        st.markdown(f'<div class="stat-card"><div class="stat-value">{summary["growth_trend"]}</div><div class="stat-label">Usage Trend</div></div>', unsafe_allow_html=True)
+    
+    # ===== THEMES SECTION (NLP Summary based on questions + keywords + longest chats) =====
+    st.markdown('<h2 class="sub-header">📚 Themes & Insights</h2>', unsafe_allow_html=True)
+    
+    if themes:
+        for theme in themes:
+            with st.expander(f"**{theme['theme']}** (Confidence: {theme['confidence']})"):
+                st.write(theme['description'])
+    else:
+        st.info("Not enough data to generate themes.")
+    
+    # ===== REPRESENTATIVE CONVERSATIONS =====
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown('<h2 class="sub-header">📏 Top 5 Longest Conversations</h2>', unsafe_allow_html=True)
+        if longest_convs:
+            for i, conv in enumerate(longest_convs[:5]):
+                with st.expander(f"**{conv['title'][:80]}...** ({conv['msg_count']} msgs, {conv['total_chars']:,} chars)"):
+                    summary_text = generate_conversation_summary(conv)
+                    st.write(f"**Summary:** {summary_text}")
+                    st.write(f"**Key Terms:** {', '.join([k[0] for k in conv['keywords']])}")
+                    st.write(f"**Messages:** {conv['msg_count']} | **Total Characters:** {conv['total_chars']:,}")
+        else:
+            st.info("No conversation data available.")
+    
+    with col2:
+        st.markdown('<h2 class="sub-header">📏 Top 5 Shortest Conversations</h2>', unsafe_allow_html=True)
+        if shortest_convs:
+            for i, conv in enumerate(shortest_convs[:5]):
+                with st.expander(f"**{conv['title'][:80]}...** ({conv['msg_count']} msgs, {conv['total_chars']:,} chars)"):
+                    summary_text = generate_conversation_summary(conv)
+                    st.write(f"**Summary:** {summary_text}")
+                    st.write(f"**Key Terms:** {', '.join([k[0] for k in conv['keywords']])}")
+                    st.write(f"**Messages:** {conv['msg_count']} | **Total Characters:** {conv['total_chars']:,}")
+        else:
+            st.info("No conversation data available.")
+    
+    # ===== QUESTION TYPES WITH EXPANDABLE EXAMPLES =====
+    st.markdown('<h2 class="sub-header">❓ How You Ask Questions</h2>', unsafe_allow_html=True)
+    
+    if question_counts and sum(v['count'] for v in question_counts.values()) > 0:
+        # Create bar chart
+        q_df = pd.DataFrame([
+            {'Type': k.capitalize(), 'Count': v['count']}
+            for k, v in question_counts.items() if v['count'] > 0
+        ]).sort_values('Count', ascending=False).head(10)
+        
+        if not q_df.empty:
+            fig = px.bar(q_df, x='Count', y='Type', orientation='h', title="Question Types")
+            fig.update_layout(height=300, yaxis={'categoryorder': 'total ascending'})
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Show examples for top question types
+        st.markdown("### 📝 Example Questions by Type")
+        top_types = sorted(question_counts.items(), key=lambda x: x[1]['count'], reverse=True)[:5]
+        
+        for q_type, q_data in top_types:
+            if q_data['examples']:
+                with st.expander(f"**{q_type.capitalize()} Questions** ({q_data['count']} total)"):
+                    for i, example in enumerate(q_data['examples']):
+                        st.markdown(f'<div class="message-card user"><strong>Example {i+1}:</strong><br>{example}</div>', unsafe_allow_html=True)
+    else:
+        st.info("No questions detected")
+    
+    # ===== LONGEST CONTEXT EXCHANGES =====
+    if long_exchanges:
+        st.markdown('<h2 class="sub-header">💬 Deepest Conversations</h2>', unsafe_allow_html=True)
+        st.markdown("*Your longest and most detailed exchanges, showing where you engage most deeply with AI.*")
+        
+        for i, exchange in enumerate(long_exchanges[:5]):
+            with st.expander(f"**Exchange {i+1}** from '{exchange['conversation_title'][:60]}...' ({exchange['combined_length']:,} total chars)"):
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("🔍 Check Availability", type="primary", use_container_width=True):
-                        for _, row in edf.iterrows():
-                            if row['Batch Size'] > 0:
-                                ings = db.get_formula(row['Product ID']); bs = row['Batch Size'] * 100
-                                st.markdown(f"**{row['Product']}** - {row['Batch Size']} units ({bs}g)")
-                                cd = []
-                                for i in ings:
-                                    qn = (i['percentage'] / 100) * bs; mat = next((m for m in mats if m['name'].lower() == i['ingredient_name'].lower()), None); sa = mat['stock_quantity'] if mat else 0
-                                    cd.append({'Ingredient': i['ingredient_name'], 'Needed (g)': f"{qn:.1f}", 'Available': f"{sa:.1f}", 'Status': '✅' if sa >= qn else '❌'})
-                                st.dataframe(pd.DataFrame(cd), use_container_width=True, hide_index=True)
+                    st.markdown('<div class="message-card user"><strong>Your Message:</strong><br>' + 
+                              exchange['user_message'][:500] + ('...' if len(exchange['user_message']) > 500 else '') + 
+                              f'<br><small>({exchange["user_message_length"]:,} chars)</small></div>', 
+                              unsafe_allow_html=True)
                 with col2:
-                    if st.button("📋 Queue for Production", type="primary", use_container_width=True):
-                        count = 0
-                        for _, row in edf.iterrows():
-                            if row['Batch Size'] > 0: bn = db.create_batch(row['Product ID'], row['Batch Size'] * 100)
-                            if bn: count += 1; st.success(f"✅ Queued: {row['Product']} ({bn})")
-                        if count > 0: st.success(f"### {count} batches sent!"); st.rerun()
+                    st.markdown('<div class="message-card ai"><strong>AI Response:</strong><br>' + 
+                              exchange['ai_response'][:500] + ('...' if len(exchange['ai_response']) > 500 else '') + 
+                              f'<br><small>({exchange["ai_response_length"]:,} chars)</small></div>', 
+                              unsafe_allow_html=True)
     
-    elif op_tab == "🧪 Formulas":
-        st.subheader("🧪 Formula Management")
-        prods = db.get_all_products()
-        if not prods: st.info("No products."); return
-        can_edit = RBAC.can(role, 'edit_formula'); can_view_pct = RBAC.can(role, 'view_pct'); is_owner = role == 'business_owner'
-        for p in prods:
-            ings = db.get_formula(p['id'])
-            if not ings: continue
-            with st.expander(f"📝 {p['name']} ({len(ings)} ingredients)", expanded=False):
-                if is_owner:
-                    new_name = st.text_input("Formula Name:", value=p['name'], key=f"rn_{p['id']}")
-                    if new_name != p['name'] and st.button("✏️ Rename", key=f"rename_{p['id']}"): db.rename_product(p['name'], new_name); st.success(f"✅ Renamed!"); st.rerun()
-                if can_view_pct:
-                    fd = [{'Ingredient': i['ingredient_name'], '%': i['percentage']} for i in ings]; fdf = pd.DataFrame(fd)
-                    if can_edit:
-                        edf = st.data_editor(fdf, column_config={'Ingredient': st.column_config.TextColumn('Ingredient'), '%': st.column_config.NumberColumn('%', min_value=0.0, max_value=100.0, step=0.1, format="%.1f%%")}, hide_index=True, use_container_width=True, key=f"fe_ops_{p['id']}")
-                        total = edf['%'].sum(); color = "green" if 95 <= total <= 105 else "red"
-                        st.markdown(f"**Total:** <span style='color:{color}'>{total:.1f}%</span>", unsafe_allow_html=True)
-                        c1, c2 = st.columns(2)
-                        if c1.button("💾 Save", key=f"sf_ops_{p['id']}"):
-                            if 95 <= total <= 105: db.save_formula(p['name'], edf); st.success("✅ Saved!"); st.rerun()
-                        if c2.button("🗑️ Delete", key=f"df_ops_{p['id']}", type="secondary") and is_owner: db.delete_formula(p['id']); st.success("Deleted!"); st.rerun()
-                    else: st.dataframe(fdf, use_container_width=True, hide_index=True)
-                else: st.dataframe(pd.DataFrame([{'Ingredient': i['ingredient_name']} for i in ings]), use_container_width=True, hide_index=True)
+    # ===== TOP KEYWORDS =====
+    st.markdown('<h2 class="sub-header">🔑 Key Keywords</h2>', unsafe_allow_html=True)
+    if keywords:
+        keyword_df = pd.DataFrame(keywords, columns=['Word', 'Frequency'])
+        fig = px.bar(keyword_df.head(10), x='Frequency', y='Word', orientation='h', title="Most Used Words")
+        fig.update_layout(height=300, yaxis={'categoryorder': 'total ascending'})
+        st.plotly_chart(fig, use_container_width=True)
     
-    elif op_tab == "🏪 Suppliers & Restock":
-        st.markdown("## 🏪 Supplier Directory")
-        sups = db.get_all_suppliers(); mats = db.get_all_materials()
-        if sups or mats:
-            sd = []; ai = set()
-            for s in sups: ai.add(s['ingredient_name'])
-            for m in mats: ai.add(m['name'])
-            for ing in sorted(ai):
-                sup = next((s for s in sups if s['ingredient_name'].lower() == ing.lower()), None); mat = next((m for m in mats if m['name'].lower() == ing.lower()), None)
-                row = {'Ingredient': ing}
-                if sup: row['Supplier'] = sup.get('supplier1_name', ''); row['Price'] = f"R{sup.get('supplier1_price', 0):.2f}"; row['Size'] = sup.get('supplier1_size', ''); row['Price/Unit'] = f"R{sup.get('supplier1_price_per_unit', 0):.4f}"; row['Link'] = sup.get('link1', '')
-                if mat: row['Stock'] = f"{mat['stock_quantity']:.1f} {mat.get('unit', 'g')}"
-                sd.append(row)
-            if sd: st.dataframe(pd.DataFrame(sd), use_container_width=True, hide_index=True)
-        
-        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-        st.markdown("## 📦 Restock Calculator")
-        if RBAC.can(role, 'restock'):
-            prods = db.get_all_products()
-            if prods:
-                sp = st.selectbox("Product:", [p['name'] for p in prods], key="rp"); du = st.number_input("Desired Units:", min_value=1, value=10, step=1)
-                if st.button("🧮 Calculate", type="primary"):
-                    prod = next((p for p in prods if p['name'] == sp), None)
-                    if prod:
-                        ings = db.get_formula(prod['id']); bs = du * 100
-                        st.markdown(f"### Restock for {sp} ({du} units / {bs}g)")
-                        rd = []; tc = 0
-                        for i in ings:
-                            qn = (i['percentage'] / 100) * bs; mat = next((m for m in mats if m['name'].lower() == i['ingredient_name'].lower()), None); sup = next((s for s in sups if s['ingredient_name'].lower() == i['ingredient_name'].lower()), None)
-                            needed = max(0, qn - (mat['stock_quantity'] if mat else 0)); cpu = sup.get('supplier1_price_per_unit', mat.get('cost_per_unit', 0)) if (sup or mat) else 0; ec = needed * cpu if cpu else 0; tc += ec
-                            rd.append({'Ingredient': i['ingredient_name'], 'Needed (g)': f"{qn:.1f}", 'In Stock': f"{mat['stock_quantity']:.1f}" if mat else '0', 'To Order': f"{needed:.1f}", 'Est. Cost': f"R{ec:.2f}"})
-                        st.dataframe(pd.DataFrame(rd), use_container_width=True, hide_index=True); st.metric("Total Est. Cost", f"R{tc:.2f}")
-                        if st.button("📤 Send to Insights", type="primary"):
-                            for r in rd: db.create_restock_request(r['Ingredient'], float(r['To Order'].replace(',','')), float(r['Est. Cost'].replace('R','').replace(',','')))
-                            st.success("✅ Sent!"); st.rerun()
-    
-    elif op_tab == "📝 Notes":
-        st.markdown("## 📝 Production Notes")
-        with st.form("onf"):
-            nt = st.text_area("Note:", height=150); nty = st.selectbox("Type:", ["general", "production", "inventory", "quality"])
-            if st.form_submit_button("💾 Save", type="primary") and nt: db.save_ops_note(nt, nty); st.success("✅ Saved!"); st.rerun()
-        st.markdown("---"); st.subheader("📜 Recent Notes")
-        for n in db.get_ops_notes():
-            nd = n.get('created_at', '')
-            try: nd = pd.to_datetime(nd).strftime('%Y-%m-%d %H:%M') if nd else ''
-            except: pass
-            st.markdown(f'<div style="background:white;border-left:4px solid {COLORS["primary"]};padding:10px;margin:5px 0;border-radius:5px;"><small><strong>{n.get("note_type","general").title()}</strong> | {nd}</small><p>{n.get("note_text","")}</p></div>', unsafe_allow_html=True)
-
-# ============================================================================
-# UI - PRODUCTION HUB (Tab 4)
-# ============================================================================
-
-def render_production_centre(db):
-    st.header("🔧 Production Hub")
-    role = st.session_state.get('role', '')
-    user_name = {'business_owner': 'Business Owner', 'production_manager': 'Production Manager', 'factory_worker': 'Factory Worker'}.get(role, 'Worker')
-    
-    prod_tab = st.radio("Section:", ["📋 Production Line", "📦 Inventory"], horizontal=True, key="prod_tab")
-    
-    if prod_tab == "📦 Inventory":
-        st.subheader("📦 Inventory Management")
-        can_add = RBAC.can(role, 'add_inv'); can_edit = RBAC.can(role, 'edit_inv'); can_remove = RBAC.can(role, 'remove_inv')
-        if can_add:
-            with st.expander("➕ Add Material", expanded=False):
-                with st.form("amf_prod"):
-                    c1, c2 = st.columns(2); nm = c1.text_input("Name*"); nu = c1.selectbox("Unit", ['g', 'ml', 'kg', 'l']); ns = c2.number_input("Stock", min_value=0.0, step=0.1)
-                    if st.form_submit_button("Add", type="primary") and nm: db.add_material(nm, nu, ns); st.success("Added!"); st.rerun()
-        mats = db.get_all_materials()
-        if mats:
-            idata = [{'ID': m['id'], 'Name': m['name'], 'Unit': m['unit'], 'Stock': m['stock_quantity'], 'Reorder': f"{m['reorder_quantity']:.1f}"} for m in mats]
-            idf = pd.DataFrame(idata)
-            if can_edit:
-                edf = st.data_editor(idf, column_config={'ID': st.column_config.NumberColumn(disabled=True), 'Name': st.column_config.TextColumn('Name'), 'Unit': st.column_config.TextColumn('Unit'), 'Stock': st.column_config.NumberColumn('Stock', min_value=0, step=0.1), 'Reorder': st.column_config.TextColumn('Reorder', disabled=True)}, hide_index=True, use_container_width=True, key="ie_prod")
-                if st.button("💾 Save Changes", type="primary"):
-                    for _, r in edf.iterrows(): db.update_material(r['ID'], name=r['Name'], stock=r['Stock'], unit=r['Unit'])
-                    st.success("✅ Updated!"); st.rerun()
-                if can_remove:
-                    tr = st.selectbox("Remove", [m['Name'] for m in idata], key="rs_prod")
-                    if st.button("🗑️ Remove", type="secondary") and tr: mid = next(m['ID'] for m in idata if m['Name'] == tr); db.remove_material(mid); st.success("Removed!"); st.rerun()
-            else: st.dataframe(idf, use_container_width=True, hide_index=True)
-        else: st.info("No materials.")
-        return
-    
-    queued = db.get_batches(status='queued'); active = db.get_batches(status='active')
-    if not queued and not active: st.info("No batches in queue."); return
-    
-    if queued:
-        st.markdown(f"### 📋 Queued ({len(queued)})")
-        for b in queued:
-            ings = db.get_batch_materials(b['id']); tw = sum(m['quantity_used'] for m in ings)
-            st.markdown(f'<div class="queue-card" style="border-top:3px solid {"{COLORS[\'success\']}" if not b.get("has_shortages") else "{COLORS[\'warning\']}"}"><h4>{"✅ Ready" if not b.get("has_shortages") else "⚠️ Shortages"} - {b["product_name"]}</h4><p>Batch: {b["batch_number"]} | Size: {b["batch_size"]}g | Ingredients: {len(ings)} | Weight: {tw:.1f}g</p></div>', unsafe_allow_html=True)
-    
-    if active:
-        st.markdown(f"### 🔄 Active ({len(active)})")
-        for b in active:
-            timer_text = "N/A"
-            if b['start_time']:
-                try: st_time = datetime.strptime(b['start_time'], "%Y-%m-%d %H:%M:%S"); el = datetime.now() - st_time; h, r = divmod(int(el.total_seconds()), 3600); m, s = divmod(r, 60); timer_text = f"{h:02d}:{m:02d}:{s:02d}"
-                except: pass
-            st.markdown(f'<div class="queue-card" style="border-top:3px solid {COLORS["success"]};"><h4>🔧 {b["product_name"]} <span style="float:right;">⏱️ {timer_text}</span></h4></div>', unsafe_allow_html=True)
-    
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-    st.markdown("## 🏭 Production Line")
-    all_batches = queued + active
-    if all_batches:
-        batch_options = [f"{'✅' if b['status']=='queued' else '🔧'} {b['batch_number']} - {b['product_name']} ({b['batch_size']}g)" for b in all_batches]
-        si = st.selectbox("Select Batch:", range(len(batch_options)), format_func=lambda x: batch_options[x], key="pb")
-        selected_batch = all_batches[si]
-        
-        st.markdown(f'<div class="production-line">', unsafe_allow_html=True)
-        st.markdown(f"### 📦 {selected_batch['product_name']}")
-        st.markdown(f"**Batch:** {selected_batch['batch_number']} | **Size:** {selected_batch['batch_size']}g | **Status:** {selected_batch['status'].title()}")
-        
-        mats_used = db.get_batch_materials(selected_batch['id'])
-        if mats_used:
-            st.markdown("### 📊 Formula Weights")
-            fd = []
-            for m in mats_used:
-                ed = m.get('expiry_date', '')
-                if ed and ed != '' and ed != 'None':
-                    try: ed = pd.to_datetime(ed).date()
-                    except: ed = None
-                else: ed = None
-                fd.append({'Ingredient': m['ingredient_name'], 'Weight (g)': m['quantity_used'], 'Batch Number': m.get('batch_number', '') or '', 'Expiry Date': ed})
+    # ===== TIMELINE WITH DATE FILTER =====
+    st.markdown('<h2 class="sub-header">📅 Activity Timeline</h2>', unsafe_allow_html=True)
+    if 'inserted_at' in df.columns and not df.empty:
+        df_timeline = df.copy()
+        df_timeline['inserted_at'] = pd.to_datetime(df_timeline['inserted_at'], errors='coerce')
+        df_timeline = df_timeline.dropna(subset=['inserted_at'])
+        if not df_timeline.empty:
+            min_date = df_timeline['inserted_at'].min().date()
+            max_date = df_timeline['inserted_at'].max().date()
             
-            fdf = pd.DataFrame(fd)
-            edf = st.data_editor(fdf, column_config={'Ingredient': st.column_config.TextColumn('Ingredient', disabled=True), 'Weight (g)': st.column_config.NumberColumn('Weight (g)', disabled=True, format="%.1f"), 'Batch Number': st.column_config.TextColumn('Batch #'), 'Expiry Date': st.column_config.DateColumn('Expiry Date')}, hide_index=True, use_container_width=True, key=f"f_{selected_batch['id']}")
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input("Start date", min_date, min_value=min_date, max_value=max_date)
+            with col2:
+                end_date = st.date_input("End date", max_date, min_value=min_date, max_value=max_date)
             
-            def save_mat():
-                md = []
-                for _, r in edf.iterrows():
-                    ex = r['Expiry Date']; es = str(ex) if ex and not pd.isna(ex) else ''
-                    md.append({'ingredient_name': r['Ingredient'], 'batch_number': str(r['Batch Number']) if r['Batch Number'] else '', 'expiry_date': es})
-                db.update_batch_materials(selected_batch['id'], md)
-            
-            st.markdown("---")
-            if selected_batch['status'] == 'queued' and RBAC.can(role, 'start'):
-                if st.button(f"▶️ Start Production", type="primary", use_container_width=True, key=f"s_{selected_batch['id']}"): save_mat(); db.start_batch(selected_batch['id']); st.success("✅ Started!"); st.rerun()
-            
-            if selected_batch['status'] == 'active' and RBAC.can(role, 'complete'):
-                uploaded_files = st.file_uploader("📎 Attach files", type=['png','jpg','jpeg','pdf'], accept_multiple_files=True, key=f"files_{selected_batch['id']}")
-                if st.button(f"⏹️ End Production", type="secondary", use_container_width=True, key=f"e_{selected_batch['id']}"): 
-                    save_mat()
-                    if uploaded_files:
-                        for uf in uploaded_files: db.save_batch_file(selected_batch['id'], uf.name, uf.read(), uf.type)
-                    st.session_state[f"end_{selected_batch['id']}"] = True; st.rerun()
-            
-            if st.session_state.get(f"end_{selected_batch['id']}"):
-                st.markdown("---"); st.markdown("### 📦 Complete Batch")
-                c1, c2 = st.columns(2)
-                with c1: units = st.number_input("Units Produced *", min_value=0, value=0, key=f"u_{selected_batch['id']}")
-                with c2: notes = st.text_area("Notes", key=f"n_{selected_batch['id']}")
-                c1, c2 = st.columns(2)
-                if c1.button("💾 Save & Complete", type="primary", key=f"sc_{selected_batch['id']}"):
-                    if units <= 0: st.error("⚠️ Please enter units produced.")
-                    else:
-                        save_mat()
-                        success, report = db.complete_batch(selected_batch['id'], units, notes, user_name)
-                        if success:
-                            st.session_state[f"end_{selected_batch['id']}"] = False; st.success("✅ Completed!"); st.balloons()
-                            st.markdown(f'<div class="completion-report"><h3>📋 Report</h3><p>Batch: {report["batch_number"]}<br>Product: {report["product_name"]}<br>By: {report["completed_by"]}<br>Time: {report["time_spent"]} hrs<br>Units: {report["units_produced"]}</p></div>', unsafe_allow_html=True)
-                            if RBAC.can(role, 'download'):
-                                csv_data = db.get_completion_reports_csv()
-                                if csv_data: st.download_button("📥 Download Report", csv_data, f"report_{selected_batch['batch_number']}.csv", "text/csv")
-                            time.sleep(2); st.rerun()
-                if c2.button("Cancel", key=f"cc_{selected_batch['id']}"): st.session_state[f"end_{selected_batch['id']}"] = False; st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
-
-# ============================================================================
-# MAIN
-# ============================================================================
-
-def main():
-    st.set_page_config(page_title="Inventilytics ", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
-    apply_css()
+            if start_date > end_date:
+                st.error("Start date must be before end date.")
+            else:
+                mask = (df_timeline['inserted_at'].dt.date >= start_date) & (df_timeline['inserted_at'].dt.date <= end_date)
+                filtered = df_timeline[mask]
+                if filtered.empty:
+                    st.info("No activity in selected range.")
+                else:
+                    daily_counts = filtered.groupby(filtered['inserted_at'].dt.date).size().reset_index(name='count')
+                    fig = px.bar(daily_counts, x='inserted_at', y='count', title="Messages per Day")
+                    fig.update_layout(xaxis_title="Date", yaxis_title="Messages")
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No date information available.")
     
-    defaults = {'data_ok': False, 'show_mapping': False, 'pending_sheets': [], 'import_results': None, 'role': 'business_owner'}
-    for k, v in defaults.items():
-        if k not in st.session_state: st.session_state[k] = v
+    # ===== INTERFACE COMPARISON =====
+    if interface_stats and len(interface_stats) > 1:
+        st.markdown('<h2 class="sub-header">🤖 Interface Comparison</h2>', unsafe_allow_html=True)
+        interface_df = pd.DataFrame([{'Interface': k, 'Messages': v['count'], 'Avg Length': v['avg_length'], 'Avg Sentiment': v['avg_sentiment']} for k, v in interface_stats.items()]).sort_values('Messages', ascending=False)
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(go.Bar(x=interface_df['Interface'], y=interface_df['Messages'], name="Messages", marker_color='#6C63FF'), secondary_y=False)
+        fig.add_trace(go.Scatter(x=interface_df['Interface'], y=interface_df['Avg Sentiment'], name="Avg Sentiment", mode='lines+markers', marker_color='#FF6B6B'), secondary_y=True)
+        fig.update_layout(title="AI Interface Usage", xaxis_title="Interface")
+        fig.update_yaxes(title_text="Messages", secondary_y=False)
+        fig.update_yaxes(title_text="Avg Sentiment", secondary_y=True, range=[-1, 1])
+        st.plotly_chart(fig, use_container_width=True)
     
-    db = DatabaseManager()
-    role = render_sidebar(db)
+    # ===== GROWTH INSIGHTS =====
+    st.markdown('<h2 class="sub-header">📈 Your Growth Journey</h2>', unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        growth_pct = growth_metrics.get('growth_rate', 0)
+        st.markdown(f'<div class="stat-card"><div style="font-size: 2rem;">📈</div><div class="stat-value">{growth_pct:+.0f}%</div><div class="stat-label">Activity Change</div></div>', unsafe_allow_html=True)
+    with col2:
+        sentiment_change = growth_metrics.get('sentiment_change', 0)
+        st.markdown(f'<div class="stat-card"><div style="font-size: 2rem;">😊</div><div class="stat-value">{sentiment_change:+.2f}</div><div class="stat-label">Sentiment Change</div></div>', unsafe_allow_html=True)
+    with col3:
+        question_growth = growth_metrics.get('question_growth', 0)
+        st.markdown(f'<div class="stat-card"><div style="font-size: 2rem;">🧐</div><div class="stat-value">{question_growth:+.0f}%</div><div class="stat-label">Curiosity Change</div></div>', unsafe_allow_html=True)
     
-    if not st.session_state.data_ok: st.session_state.data_ok = db.has_data()
+    # ===== RECOMMENDATIONS =====
+    st.markdown('<h2 class="sub-header">💡 Personal Development Insights</h2>', unsafe_allow_html=True)
+    recommendations = []
+    if "Community Organizer" in archetype['name']:
+        recommendations.append("🏛️ Your community building skills are strong! Consider documenting your organizing strategies.")
+    elif "Power User" in archetype['name']:
+        recommendations.append("🔮 You're already a power user! Consider building custom AI workflows and automations.")
+    elif "Deep Thinker" in archetype['name']:
+        recommendations.append("🧠 Your deep questions are valuable. Try journaling your insights after each conversation.")
+    elif "Curious Collaborator" in archetype['name']:
+        recommendations.append("🤝 You're great at collaboration. Try using AI for brainstorming and creative projects.")
+    elif "Efficient Executor" in archetype['name']:
+        recommendations.append("⚡ You're efficient! Consider exploring deeper, more creative use cases.")
+    else:
+        recommendations.append("🌱 You're on a journey! Try different AI interfaces to find what works best for you.")
+    if topics:
+        top_words = topics[0]['words'][:3]
+        recommendations.append(f"📚 Your top topics include {', '.join(top_words)}. Consider diving deeper into one of these areas.")
+    if stats['total_messages'] > 50:
+        recommendations.append("📊 You have enough data for meaningful analysis. Keep tracking your progress!")
+    for rec in recommendations[:3]:
+        st.markdown(f'<div class="insight-box">{rec}</div>', unsafe_allow_html=True)
     
-    if st.session_state.get('show_mapping') and st.session_state.get('pending_sheets'):
-        st.header("🖥️ Data Command Centre"); render_data_centre(db); return
-    
-    if not st.session_state.data_ok and role != 'factory_worker': render_welcome_page(); return
-    
-    if role == 'factory_worker': render_production_centre(db); return
-    
-    tl = []
-    if RBAC.can(role, 'data'): tl.append(("🖥️ Data Centre", "data"))
-    if RBAC.can(role, 'insights'): tl.append(("📊 Insights Hub", "insights"))
-    if RBAC.can(role, 'ops'): tl.append(("🏭 Operations Hub", "ops"))
-    if RBAC.can(role, 'production'): tl.append(("🔧 Production Hub", "production"))
-    
-    if tl:
-        tabs = st.tabs([t[0] for t in tl])
-        for i, (_, tn) in enumerate(tl):
-            with tabs[i]:
-                if tn == 'data': render_data_centre(db)
-                elif tn == 'insights': render_insights(db)
-                elif tn == 'ops': render_operations_centre(db)
-                elif tn == 'production': render_production_centre(db)
+    # ===== DOWNLOAD =====
+    st.markdown('<h2 class="sub-header">💾 Download Your Insights</h2>', unsafe_allow_html=True)
+    report_data = {
+        'Archetype': archetype['name'], 'Archetype Description': archetype['description'],
+        'Total Messages': stats['total_messages'], 'Favorite AI': summary['favorite_interface'],
+        'Peak Usage': summary['peak_time'], 'Top Topic': summary['top_topic'],
+        'Top Keyword': summary['top_keyword'], 'Growth Trend': summary['growth_trend'],
+        'Avg Sentiment': f"{stats['avg_sentiment']:.2f}", 'Question Ratio': f"{stats['question_ratio']:.1%}",
+        'Conversations': stats.get('conversations', 0)
+    }
+    report_df = pd.DataFrame([report_data])
+    csv = report_df.to_csv(index=False).encode('utf-8')
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button("📥 Download Summary Report (CSV)", data=csv,
+                           file_name=f"ai_coach_report_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
+    with col2:
+        full_csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Download Full Analysis Data (CSV)", data=full_csv,
+                           file_name=f"ai_coach_full_data_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
 
 if __name__ == "__main__":
     main()
