@@ -1,6 +1,6 @@
 %%writefile inventilytics.py
 """
-EQPIS - Earthly Q Production Intelligence System
+Inventilytics - Earthly Q Production Intelligence System
 Version 15.0 - Comprehensive Data Matching & Business Intelligence
 """
 
@@ -623,7 +623,7 @@ class RBAC:
 # ============================================================================
 
 def render_sidebar(db):
-    st.sidebar.markdown(f'<div style="text-align:center;padding:20px;"><h2 style="color:{COLORS["primary"]};">🌿 EQPIS</h2></div>', unsafe_allow_html=True)
+    st.sidebar.markdown(f'<div style="text-align:center;padding:20px;"><h2 style="color:{COLORS["primary"]};">🌿 Inventilytics </h2></div>', unsafe_allow_html=True)
     
     st.sidebar.markdown("---")
     st.sidebar.subheader("👤 Select Role")
@@ -672,7 +672,7 @@ def render_sidebar(db):
 # ============================================================================
 
 def render_welcome_page():
-    st.markdown(f"<h1 style='text-align:center;color:{COLORS['primary']};'>🌿 Welcome to EQPIS!</h1>", unsafe_allow_html=True)
+    st.markdown(f"<h1 style='text-align:center;color:{COLORS['primary']};'>🌿 Welcome to Inventilytics !</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align:center;'>Select your role and upload Excel/CSV/ZIP files via sidebar to begin.</p>", unsafe_allow_html=True)
 
 def render_mapping(db):
@@ -1246,7 +1246,7 @@ def render_production_centre(db):
 # ============================================================================
 
 def main():
-    st.set_page_config(page_title="EQPIS", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
+    st.set_page_config(page_title="Inventilytics ", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
     apply_css()
     
     defaults = {'data_ok': False, 'show_mapping': False, 'pending_sheets': [], 'import_results': None, 'role': 'business_owner'}
